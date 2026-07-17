@@ -1,0 +1,104 @@
+.user-home-page {
+  text-align: left;
+}
+
+.user-home-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.user-home-header h1 {
+  margin: 0 0 0.25rem;
+}
+
+.workloads-section h2 {
+  margin-bottom: 1rem;
+}
+
+.workload-button-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.workload-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.workload-button {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--social-bg);
+  color: var(--text-h);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workload-button:hover {
+  box-shadow: var(--shadow);
+}
+
+.child-workload-button-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-left: 1.5rem;
+}
+
+.child-workload-button {
+  padding-left: 1.5rem;
+}
+
+.child-workload-empty-message {
+  margin: 0;
+  color: var(--text-l);
+}
+.workload-button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.workload-action-error,
+.ampp-webrtc-error {
+  color: #b00020;
+}
+
+.ampp-webrtc-viewer {
+  margin-top: 2rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ampp-webrtc-viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.ampp-webrtc-viewer-header h2 {
+  margin: 0 0 0.25rem;
+}
+
+.ampp-webrtc-viewer-header p {
+  margin: 0;
+}
+
+.ampp-webrtc-video {
+  width: 100%;
+  max-width: 960px;
+  background: #000;
+  border-radius: 8px;
+}

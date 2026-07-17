@@ -1,0 +1,66 @@
+
+> vnr_app@1.0.0 dev
+> concurrently "npm run start:dev --prefix api" "npm run dev:web:delay"
+
+[1] 
+[1] > vnr_app@1.0.0 dev:web:delay
+[1] > sleep 4 && npm run dev --prefix web
+[1] 
+[0] 
+[0] > api@0.0.1 start:dev
+[0] > nest start --watch
+[0] 
+[0] [2J[3J[H[[90m12:42:51 PM[0m] Starting compilation in watch mode...
+[0] 
+[0] [[90m12:42:54 PM[0m] Found 0 errors. Watching for file changes.
+[0] 
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[NestFactory] [39m[32mStarting Nest application...[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mConfigHostModule dependencies initialized[39m[38;5;3m +11ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mAppModule dependencies initialized[39m[38;5;3m +2ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mConfigModule dependencies initialized[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mUsersModule dependencies initialized[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mAmppControlClientModule dependencies initialized[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mAuthModule dependencies initialized[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mAmppModule dependencies initialized[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mAppController {/api}:[39m[38;5;3m +27ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api, GET} route[39m[38;5;3m +3ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/hello, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mAuthController {/api/auth}:[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/auth/login, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/auth/me, GET} route[39m[38;5;3m +1ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/auth/logout, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mAmppControlController {/api/ampp/control}:[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/application-types, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/application-types/:application/workloads, GET} route[39m[38;5;3m +1ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/application-types/:application/workload-names, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/workloads/:workload_id, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/workloads/:workload_id/child-workloads, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/application-types/:application/control-schemas, GET} route[39m[38;5;3m +1ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/macros, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/macros/:uuid/execute, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/message, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/program-control-state, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/notifications/start, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/notifications/subscribe, POST} route[39m[38;5;3m +1ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/workloads/:workload/notifications, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/notifications/stream, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/webrtc/session, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/webrtc/signal, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/control/webrtc/stream, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mAmppKeyframesController {/api/ampp/keyframes}:[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/keyframes/producers/:producerName/listener, POST} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/keyframes/producers/:producerName/latest, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/keyframes/producers/:producerName/image/latest, GET} route[39m[38;5;3m +1ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/keyframes/stream, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mAmppSessionController {/api/ampp/session}:[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/api/ampp/session/current, GET} route[39m[38;5;3m +0ms[39m
+[0] [32m[Nest] 4616  - [39m07/08/2026, 12:42:54 PM [32m    LOG[39m [38;5;3m[NestApplication] [39m[32mNest application successfully started[39m[38;5;3m +1ms[39m
+[1] 
+[1] > web@0.0.0 dev
+[1] > vite
+[1] 
+[1] 
+[1]   VITE v8.0.13  ready in 237 ms
+[1] 
+[1]   ➜  Local:   http://localhost:5173/
+[1]   ➜  Network: use --host to expose
