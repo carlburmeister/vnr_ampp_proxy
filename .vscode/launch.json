@@ -17,7 +17,8 @@
       "name": "Debug React Web",
       "type": "chrome",
       "request": "launch",
-      "url": "http://localhost:5173",
+      //"url": "http://localhost:5173",
+      "url": "http://localhost:8081",
       "webRoot": "${workspaceFolder}/web/src",
       "sourceMaps": true
     }
