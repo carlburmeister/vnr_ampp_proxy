@@ -7,16 +7,27 @@ import { getFlowMonitorLaunchTarget } from '../features/flowMonitor/flowMonitorW
 import { MINI_MIXER_APPLICATION_NAME } from '../features/miniMixer/minMixerConstants';
 import { getMiniMixerLaunchTarget } from '../features/miniMixer/minMixerWorkloadHandler';
 
-import type { AllowedWorkload, ChildWorkload, SessionData } from '../services/amppSessionApi';
+import type {
+  AllowedWorkload,
+  ChildWorkload,
+  SessionData,
+} from '../services/amppSessionApi';
 import {
   resolveWorkloadApplicationLaunchTarget,
   type WorkloadApplicationLaunchHandler,
+  type WorkloadLaunchTarget,
 } from '../utils/workloadApplicationHandlers';
+import { getAmppUiLaunchTarget } from '../utils/workloadAmppUiHandlers';
 
 type UserHomePageProps = {
   session: SessionData;
   onLogout: () => void;
 };
+
+type WorkloadLaunchTargetResolver = () =>
+  | Promise<WorkloadLaunchTarget | null>
+  | WorkloadLaunchTarget
+  | null;
 
 export function UserHomePage({ session, onLogout }: UserHomePageProps) 
 {  
@@ -32,7 +43,9 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
 
   const workloadNames = workloads.flatMap((workload: AllowedWorkload) => [
     workload.name,
-    ...(workload.child_workloads ?? []).map((childWorkload: ChildWorkload) => childWorkload.name),
+    ...(workload.child_workloads ?? []).map(
+      (childWorkload: ChildWorkload) => childWorkload.name,
+    ),
   ]);
 
   const longestNameLength = Math.max(
@@ -50,28 +63,52 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
       workloadId: workload.id,
       workloadName: workload.name,
       applicationName: workload.applicationName,
+      pageType: workload.pageType,
       isParent: workload.is_parent,
     });
 
     setWorkloadActionError('');
 
-    if (hasWorkloadApplicationLaunchHandler(workload)) {
-      await openWorkloadApplicationInNewTab(workload);
+    if (
+      workload.pageType === 'custom' &&
+      hasWorkloadApplicationLaunchHandler(workload)
+    ) {
+      await openWorkloadInNewTab(workload, () =>
+        resolveWorkloadApplicationLaunchTarget(
+          workload,
+          workloadApplicationLaunchHandlers,
+        ),
+      );
+
+      return;
+    }
+
+    if (workload.pageType === 'ampp-ui') {
+      await openWorkloadInNewTab(
+        workload,
+        () => getAmppUiLaunchTarget(workload),
+      );
+
       return;
     }
 
     if (workload.is_parent === 1) {
       setExpandedWorkloadIds((currentExpandedWorkloadIds) => (
         currentExpandedWorkloadIds.includes(workload.id)
-          ? currentExpandedWorkloadIds.filter((workloadId) => workloadId !== workload.id)
+          ? currentExpandedWorkloadIds.filter(
+              (workloadId) => workloadId !== workload.id,
+            )
           : [...currentExpandedWorkloadIds, workload.id]
       ));
 
       return;
     }
 
-    // TODO: Route/click behavior will use workload.applicationName.
-    console.log('Selected workload:', workload.applicationName);
+    setWorkloadActionError(
+      `No custom UI is configured for ${
+        workload.applicationName ?? workload.name
+      }.`,
+    );
   }
 
   /*-------------------------------------------------------------*/
@@ -79,14 +116,20 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
   /*-------------------------------------------------------------*/
   function handleChildWorkloadClick(workload: ChildWorkload) {
     // TODO: Route/click behavior will use workload.applicationName.
-    console.log('Selected workload application:', workload.applicationName);
+    console.log(
+      'Selected workload application:',
+      workload.applicationName,
+    );
+
     void handleWorkloadClick(workload);
   }
 
   /*-------------------------------------------------------------*/
   //  hasWorkloadApplicationLaunchHandler()
   /*-------------------------------------------------------------*/
-  function hasWorkloadApplicationLaunchHandler(workload: AllowedWorkload) {
+  function hasWorkloadApplicationLaunchHandler(
+    workload: AllowedWorkload,
+  ) {
     return Boolean(
       workload.applicationName &&
       workloadApplicationLaunchHandlers[workload.applicationName]
@@ -94,23 +137,26 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
   }
 
   /*-------------------------------------------------------------*/
-  //  openWorkloadApplicationInNewTab()
+  //  openWorkloadInNewTab()
   /*-------------------------------------------------------------*/
-  async function openWorkloadApplicationInNewTab(workload: AllowedWorkload) {
+  async function openWorkloadInNewTab(
+    workload: AllowedWorkload,
+    resolveLaunchTarget: WorkloadLaunchTargetResolver,
+  ) {
     const newTab = window.open('about:blank', '_blank');
 
     if (!newTab) {
-      setWorkloadActionError('Unable to open a new browser tab. Please allow popups for this site.');
+      setWorkloadActionError(
+        'Unable to open a new browser tab. Please allow popups for this site.',
+      );
+
       return;
     }
 
     setLoadingWorkloadId(workload.id);
 
     try {
-      const launchTarget = await resolveWorkloadApplicationLaunchTarget(
-        workload,
-        workloadApplicationLaunchHandlers,
-      );
+      const launchTarget = await resolveLaunchTarget();
 
       if (!launchTarget) {
         newTab.close();
@@ -120,8 +166,17 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
       newTab.location.href = launchTarget.url;
     } catch (err) {
       newTab.close();
-      console.error('[VNR] open workload application failed', err);
-      setWorkloadActionError(err instanceof Error ? err.message : 'Open workload application failed');
+
+      console.error(
+        '[VNR] open workload application failed',
+        err,
+      );
+
+      setWorkloadActionError(
+        err instanceof Error
+          ? err.message
+          : 'Open workload application failed',
+      );
     } finally {
       setLoadingWorkloadId('');
     }
@@ -134,6 +189,7 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
           <h1>{session.user.displayName}</h1>
           <p>{session.user.username}</p>
         </div>
+
         <button type="button" onClick={onLogout}>
           Sign out
         </button>
@@ -142,16 +198,25 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
       <section className="workloads-section">
         <h2>My Workloads</h2>
 
-        {workloadActionError && <p className="workload-action-error">{workloadActionError}</p>}
+        {workloadActionError && (
+          <p className="workload-action-error">
+            {workloadActionError}
+          </p>
+        )}
 
         {workloads.length ? (
           <div className="workload-button-list">
             {workloads.map((workload: AllowedWorkload) => {
-              const isExpanded = expandedWorkloadIds.includes(workload.id);
-              const childWorkloads = workload.child_workloads ?? [];
+              const isExpanded =
+                expandedWorkloadIds.includes(workload.id);
+              const childWorkloads =
+                workload.child_workloads ?? [];
 
               return (
-                <div key={workload.id} className="workload-group">
+                <div
+                  key={workload.id}
+                  className="workload-group"
+                >
                   <button
                     type="button"
                     className="workload-button"
@@ -161,27 +226,39 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
                     disabled={loadingWorkloadId === workload.id}
                     onClick={() => handleWorkloadClick(workload)}
                   >
-                    {loadingWorkloadId === workload.id ? 'Loading...' : workload.name}
+                    {loadingWorkloadId === workload.id
+                      ? 'Loading...'
+                      : workload.name}
                   </button>
 
                   {workload.is_parent === 1 && isExpanded && (
                     <div className="child-workload-button-list">
                       {childWorkloads.length ? (
-                        childWorkloads.map((childWorkload: ChildWorkload) => (
-                          <button
-                            key={childWorkload.id}
-                            type="button"
-                            className="workload-button child-workload-button"
-                            style={{ width: buttonWidth }}
-                            data-application-name={childWorkload.applicationName}
-                            //onClick={() => handleChildWorkloadClick(childWorkload)}
-                            onClick={() => handleChildWorkloadClick(childWorkload)}
-                          >
-                            {childWorkload.name}
-                          </button>
-                        ))
+                        childWorkloads.map(
+                          (childWorkload: ChildWorkload) => (
+                            <button
+                              key={childWorkload.id}
+                              type="button"
+                              className="workload-button child-workload-button"
+                              style={{ width: buttonWidth }}
+                              data-application-name={
+                                childWorkload.applicationName
+                              }
+                              //onClick={() => handleChildWorkloadClick(childWorkload)}
+                              onClick={() =>
+                                handleChildWorkloadClick(
+                                  childWorkload,
+                                )
+                              }
+                            >
+                              {childWorkload.name}
+                            </button>
+                          ),
+                        )
                       ) : (
-                        <p className="child-workload-empty-message">No child workloads found.</p>
+                        <p className="child-workload-empty-message">
+                          No child workloads found.
+                        </p>
                       )}
                     </div>
                   )}

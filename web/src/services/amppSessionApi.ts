@@ -1,10 +1,13 @@
 import type { AuthenticatedUser } from './authApi';
 
+export type WorkloadPageType = 'custom' | 'ampp-ui';
+
 export type ChildWorkload = {
   is_parent: 0;
   id: string;
   name: string;
   applicationName: string;
+  pageType: WorkloadPageType;
   fabricId?: string;
   nodeId?: string;
 };
@@ -14,6 +17,7 @@ export type AllowedWorkload = {
   name: string;
   is_parent: 0 | 1;
   applicationName?: string;
+  pageType: WorkloadPageType;
   fabricId?: string;
   nodeId?: string;
   child_workloads?: ChildWorkload[];

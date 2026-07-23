@@ -1,3 +1,5 @@
+export type WorkloadPageType = 'custom' | 'ampp-ui';
+
 export type ExtractedWorkload = {
   id: string;
   name: string;
@@ -6,17 +8,23 @@ export type ExtractedWorkload = {
   nodeId: string;
 };
 
+export type ChildWorkload = ExtractedWorkload & {
+  is_parent: 0;
+  pageType: WorkloadPageType;
+};
+
 export type UserDBWorkload = {
   id: string;
   name: string;
   is_parent: 0 | 1;
+  pageType: WorkloadPageType;
 };
 
 export type AllowedWorkload = UserDBWorkload & {
   applicationName?: string;
   fabricId?: string;
   nodeId?: string;
-  child_workloads?: ExtractedWorkload[];
+  child_workloads?: ChildWorkload[];
 };
 
 export type AmppChildWorkload = {

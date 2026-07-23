@@ -1,3 +1,37 @@
+// {
+//   "version": "0.2.0",
+//   "configurations": [
+//     {
+//       "name": "Debug Nest API",
+//       "type": "node",
+//       "request": "launch",
+//       "runtimeExecutable": "npm",
+//       "runtimeArgs": ["run", "start:debug"],
+//       "cwd": "${workspaceFolder}/api",
+//       "console": "integratedTerminal",
+//       "restart": true,
+//       "autoAttachChildProcesses": true,
+//       "sourceMaps": true
+//     },
+//     {
+//       "name": "Debug React Web",
+//       "type": "chrome",
+//       "request": "launch",
+//       //"url": "http://localhost:5173",
+//       "url": "http://localhost:8081",
+//       "webRoot": "${workspaceFolder}/web/src",
+//       "sourceMaps": true
+//     }
+//   ],
+//   "compounds": [
+//     {
+//       "name": "Debug API + Web",
+//       "configurations": ["Debug Nest API", "Debug React Web"]
+//     }
+//   ]
+// }
+
+// Debug with Nginx servering front end pages
 {
   "version": "0.2.0",
   "configurations": [
@@ -14,19 +48,24 @@
       "sourceMaps": true
     },
     {
-      "name": "Debug React Web",
+      "name": "Debug React Web through Nginx",
       "type": "chrome",
       "request": "launch",
-      //"url": "http://localhost:5173",
       "url": "http://localhost:8081",
-      "webRoot": "${workspaceFolder}/web/src",
-      "sourceMaps": true
+      "webRoot": "${workspaceFolder}/web",
+      "sourceMaps": true,
+      "skipFiles": [
+        "**/node_modules/**"
+      ]
     }
   ],
   "compounds": [
     {
       "name": "Debug API + Web",
-      "configurations": ["Debug Nest API", "Debug React Web"]
+      "configurations": [
+        "Debug Nest API",
+        "Debug React Web through Nginx"
+      ]
     }
   ]
 }

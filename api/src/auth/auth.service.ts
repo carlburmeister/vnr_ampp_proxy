@@ -5,8 +5,10 @@ import { AmppControlService } from '../ampp/services/ampp-control.service';
 import type {
   AllowedWorkload,
   AmppChildWorkloadsResponse,
+  ChildWorkload,
   ExtractedWorkload,
   UserDBWorkload,
+  WorkloadPageType,
 } from '../ampp/types/workload_types';
 import { UserCredentialsRepository } from '../users/services/user-credentials.repository';
 
@@ -56,33 +58,71 @@ export class AuthService {
 
     /* Get user's assigned workloads from the DB */
     const userDBWorkloads = await this.getUserDBWorkloads(user.id);
+    const parentDBWorkloads = userDBWorkloads.filter(
+      (workload) => workload.is_parent === 1,
+    );
+    const individualDBWorkloads = userDBWorkloads.filter(
+      (workload) => workload.is_parent === 0,
+    );
 
-    const allowedWorkloads = await Promise.all(
-      userDBWorkloads.map(async (workload) => {
+    const parentAllowedWorkloads = await Promise.all(
+      parentDBWorkloads.map(async (workload) => {
         const workload_resp = await this.getWorkload(workload.id);
 
-        if (workload.is_parent) {
-          return {
-            ...workload,
-            name: workload_resp.name,
-            applicationName: workload_resp.applicationName,
-            fabricId: workload_resp.fabricId,
-            nodeId: workload_resp.nodeId,
-            child_workloads: await this.getChildWorkloads(workload.id),
-          };
-        }
-        else {
-          return {
-            ...workload,
-            name: workload_resp.name,
-            applicationName: workload_resp.applicationName,
-            fabricId: workload_resp.fabricId,
-            nodeId: workload_resp.nodeId,
-          };
-        }
-
+        return {
+          ...workload,
+          name: workload_resp.name,
+          applicationName: workload_resp.applicationName,
+          fabricId: workload_resp.fabricId,
+          nodeId: workload_resp.nodeId,
+          child_workloads: await this.getChildWorkloads(
+            workload.id,
+            'custom',
+          ),
+        };
       }),
     );
+
+    const parentChildWorkloadIds = new Set(
+      parentAllowedWorkloads.flatMap((parentWorkload) =>
+        parentWorkload.child_workloads.map((childWorkload) => childWorkload.id),
+      ),
+    );
+
+    for (const individualWorkload of individualDBWorkloads) {
+      for (const parentWorkload of parentAllowedWorkloads) {
+        const matchingChildWorkload = parentWorkload.child_workloads.find(
+          (childWorkload) => childWorkload.id === individualWorkload.id,
+        );
+
+        if (matchingChildWorkload) {
+          matchingChildWorkload.pageType = individualWorkload.pageType;
+        }
+      }
+    }
+
+    const standaloneDBWorkloads = individualDBWorkloads.filter(
+      (workload) => !parentChildWorkloadIds.has(workload.id),
+    );
+
+    const standaloneAllowedWorkloads = await Promise.all(
+      standaloneDBWorkloads.map(async (workload) => {
+        const workload_resp = await this.getWorkload(workload.id);
+
+        return {
+          ...workload,
+          name: workload_resp.name,
+          applicationName: workload_resp.applicationName,
+          fabricId: workload_resp.fabricId,
+          nodeId: workload_resp.nodeId,
+        };
+      }),
+    );
+
+    const allowedWorkloads: AllowedWorkload[] = [
+      ...parentAllowedWorkloads,
+      ...standaloneAllowedWorkloads,
+    ];
 
     const firstWorkload = this.getFirstResolvedWorkload(allowedWorkloads);
 
@@ -141,8 +181,9 @@ export class AuthService {
   //  getChildWorkloads()
   /*-------------------------------------------------------------*/
   private async getChildWorkloads(
-    parentWorkloadId?: string,
-  ): Promise<ExtractedWorkload[]> {
+    parentWorkloadId: string | undefined,
+    pageType: WorkloadPageType,
+  ): Promise<ChildWorkload[]> {
     
     if (!parentWorkloadId) {
       return [];
@@ -159,6 +200,8 @@ export class AuthService {
       applicationName: item.workload.applicationName ?? item.workload.packageName ?? '',
       fabricId: item.workload.fabricId,
       nodeId: item.workload.state?.nodeId ?? '',
+      is_parent: 0,
+      pageType,
     }));
   }
   /*-------------------------------------------------------------*/
@@ -172,6 +215,16 @@ export class AuthService {
 
       if (firstChildWorkload) {
         return firstChildWorkload;
+      }
+
+      if (workload.is_parent === 0) {
+        return {
+          id: workload.id,
+          name: workload.name,
+          applicationName: workload.applicationName ?? '',
+          fabricId: workload.fabricId ?? '',
+          nodeId: workload.nodeId ?? '',
+        };
       }
     }
 

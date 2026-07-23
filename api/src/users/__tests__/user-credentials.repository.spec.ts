@@ -59,13 +59,13 @@ describe('UserCredentialsRepository', () => {
       [
         {
           workload_id: 'parent-workload-001',
-          name: 'Production 1',
           is_parent: 1,
+          page_type: 'custom',
         },
         {
           workload_id: 'direct-workload-001',
-          name: 'Individual workload 1',
           is_parent: 0,
+          page_type: 'ampp-ui',
         },
       ],
     ]);
@@ -85,13 +85,15 @@ describe('UserCredentialsRepository', () => {
     await expect(repository.getUserDBWorkloads('mock-user-001')).resolves.toEqual([
       {
         id: 'parent-workload-001',
-        name: 'Production 1',
+        name: '',
         is_parent: 1,
+        pageType: 'custom',
       },
       {
         id: 'direct-workload-001',
-        name: 'Individual workload 1',
+        name: '',
         is_parent: 0,
+        pageType: 'ampp-ui',
       },
     ]);
 

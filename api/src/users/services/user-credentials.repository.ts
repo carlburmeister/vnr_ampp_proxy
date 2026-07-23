@@ -6,7 +6,10 @@ import {
   type RowDataPacket,
 } from 'mysql2/promise';
 
-import type { UserDBWorkload } from '../../ampp/types/workload_types';
+import type {
+  UserDBWorkload,
+  WorkloadPageType,
+} from '../../ampp/types/workload_types';
 
 export type UserCredentialRecord = {
   id: string;
@@ -28,6 +31,7 @@ type UserDBWorkloadRow = RowDataPacket & {
   workload_id: string;
   name: string;
   is_parent: 0 | 1 | boolean;
+  page_type: WorkloadPageType;
 };
 
 @Injectable()
@@ -93,10 +97,11 @@ export class UserCredentialsRepository implements OnModuleDestroy {
     const [rows] = await this.pool.execute<UserDBWorkloadRow[]>(
       `SELECT
           workload_id,
-          is_parent
+          is_parent,
+          page_type
        FROM ampp_workloads
        WHERE user_id = ?
-       ORDER BY row_id ASC`,
+       ORDER BY is_parent DESC, row_id ASC`,
       [userId],
     );
 
@@ -104,6 +109,7 @@ export class UserCredentialsRepository implements OnModuleDestroy {
       id: row.workload_id,
       name: '',
       is_parent: row.is_parent ? 1 : 0,
+      pageType: row.page_type,
     }));
   }
 }
