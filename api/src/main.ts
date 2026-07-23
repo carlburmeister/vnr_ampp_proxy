@@ -21,10 +21,6 @@ async function bootstrap() {
   });
 
   const isProduction = process.env.NODE_ENV === 'production';
-  
-  //const sessionSecret =
-  //  config.get<string>('SESSION_SECRET') ??
-  //  'dev-only-change-this-session-secret-before-production';
 
   const sessionSecret = config.get<string>('SESSION_SECRET');
 
