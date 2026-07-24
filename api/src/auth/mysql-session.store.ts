@@ -36,7 +36,7 @@ export class MysqlSessionStore extends session.Store {
       queueLimit: 0,
     });
 
-    this.ready = this.createTable();
+    this.ready = this.initialize();
   }
 
   async get(
@@ -45,7 +45,6 @@ export class MysqlSessionStore extends session.Store {
   ) {
     try {
       await this.ready;
-      await this.deleteExpiredSessions();
 
       const [rows] = await this.pool.execute<SessionRow[]>(
         `SELECT data
@@ -123,6 +122,11 @@ export class MysqlSessionStore extends session.Store {
 
   async close() {
     await this.pool.end();
+  }
+
+  private async initialize() {
+    await this.createTable();
+    await this.deleteExpiredSessions();
   }
 
   private async createTable() {

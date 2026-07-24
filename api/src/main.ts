@@ -3,17 +3,29 @@ import './auth/types/session-data';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { json, raw, urlencoded } from 'express';
 import session from 'express-session';
 
 import { MysqlSessionStore } from './auth/mysql-session.store';
 
 import { AppModule } from './app.module';
+import { AmppWebSocketProxyService } from './ampp-proxy/ampp-websocket-proxy.service';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
   const config = app.get(ConfigService);
 
   app.setGlobalPrefix('/api');
+
+  app.use(
+    '/api/ampp-proxy/api',
+    raw({
+      type: () => true,
+      limit: config.get<string>('AMPP_PROXY_BODY_LIMIT') ?? '2mb',
+    }),
+  );
+  app.use(json({ limit: '100kb' }));
+  app.use(urlencoded({ extended: true, limit: '100kb' }));
 
   app.enableCors({
     origin: 'http://localhost:5173',
@@ -37,22 +49,25 @@ async function bootstrap() {
     database: config.get<string>('MYSQL_DATABASE'),
   });
 
-  app.use(
-    session({
-      store: sessionStore,
-      name: sessionCookieName,
-      secret: sessionSecret,
-      resave: false,
-      saveUninitialized: false,
-      rolling: true,
-      cookie: {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: 'lax',
-        maxAge: 1000 * 60 * 60 * 8,
-      },
-    }),
-  );
+  const sessionMiddleware = session({
+    store: sessionStore,
+    name: sessionCookieName,
+    secret: sessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    rolling: true,
+    cookie: {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'lax',
+      maxAge: 1000 * 60 * 60 * 8,
+    },
+  });
+
+  app.use(sessionMiddleware);
+  app
+    .get(AmppWebSocketProxyService)
+    .attach(app.getHttpServer(), sessionMiddleware);
 
   app.useGlobalPipes(
     new ValidationPipe({

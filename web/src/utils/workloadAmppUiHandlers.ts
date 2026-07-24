@@ -28,14 +28,10 @@ export function getAmppUiLaunchTarget(
     `/app/wrapper/single/${wrapperApplicationName}/` +
     encodeURIComponent(workload.id);
 
-  const params = new URLSearchParams({
-    path: upstreamPath,
-  });
-
   return {
     url:
       `/api/ampp-proxy/ui/${encodeURIComponent(workload.id)}` +
-      `?${params.toString()}`,
+      upstreamPath,
     title: workload.name,
   };
 }

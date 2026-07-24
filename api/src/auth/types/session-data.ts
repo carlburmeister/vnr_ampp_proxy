@@ -1,6 +1,7 @@
 import 'express-session';
 
 import type { AllowedWorkload } from '../../ampp/types/workload_types';
+import type { CookieJar } from 'tough-cookie';
 import type { AuthenticatedUser } from '../auth.service';
 
 declare module 'express-session' {
@@ -10,6 +11,7 @@ declare module 'express-session' {
     fabricId?: string;
     nodeId?: string; 
     allowedWorkloads?: AllowedWorkload[];
+    amppCookieJar?: ReturnType<CookieJar['toJSON']>;
   }
 }
 

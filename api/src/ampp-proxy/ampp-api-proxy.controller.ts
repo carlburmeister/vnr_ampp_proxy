@@ -1,9 +1,8 @@
 import {
+  All,
   BadRequestException,
   Controller,
-  Get,
   Param,
-  Query,
   Req,
   Res,
   UseGuards,
@@ -12,57 +11,40 @@ import type { Request, Response } from 'express';
 
 import { SessionAuthGuard } from '../auth/session-auth.guard';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
-import { AmppResponseRewriterService } from './ampp-response-rewriter.service';
 import { AmppProxyService } from './ampp-proxy.service';
 
 @Controller('ampp-proxy')
 @UseGuards(SessionAuthGuard)
-export class AmppProxyController {
+export class AmppApiProxyController {
   constructor(
     private readonly policy: AmppProxyPolicyService,
-    private readonly responseRewriter: AmppResponseRewriterService,
     private readonly proxy: AmppProxyService,
   ) {}
 
-  @Get('ui/:workloadId')
-  redirectLegacyUiPage(
-    @Param('workloadId') workloadId: string,
-    @Query('path') upstreamPath: string,
-    @Req() req: Request,
-    @Res() res: Response,
-  ): void {
-    const allowedPath = this.policy.assertUiAccess(
-      req.session,
-      workloadId,
-      upstreamPath,
-    );
-
-    res.redirect(
-      302,
-      this.responseRewriter.createProxyPath(workloadId, allowedPath),
-    );
-  }
-
-  @Get('ui/:workloadId/*upstreamPath')
-  async getUiResource(
+  @All('api/:workloadId/*upstreamPath')
+  async proxyApiRequest(
     @Param('workloadId') workloadId: string,
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    const method = req.method.toUpperCase();
     const upstreamPath = this.getUpstreamPath(req, workloadId);
-    const allowedPath = this.isWorkloadPagePath(upstreamPath, workloadId)
-      ? this.policy.assertUiAccess(req.session, workloadId, upstreamPath)
-      : this.policy.assertUiResourceAccess(
-          req.session,
-          workloadId,
-          upstreamPath,
-        );
-    const upstreamResponse = await this.proxy.getUiResource(
+    const body = this.getRawBody(req);
+    const allowedPath = this.policy.assertApiAccess(
+      req.session,
+      workloadId,
+      method,
+      upstreamPath,
+      body,
+    );
+    const upstreamResponse = await this.proxy.proxyApiRequest(
       req.sessionID,
       req.session,
       workloadId,
+      method,
       allowedPath,
       req.headers,
+      body,
       this.getPublicOrigin(req),
     );
 
@@ -89,14 +71,28 @@ export class AmppProxyController {
   private getUpstreamPath(req: Request, workloadId: string): string {
     const requestUrl = new URL(req.originalUrl, 'http://ampp-proxy.local');
     const proxyPrefix =
-      `/api/ampp-proxy/ui/${encodeURIComponent(workloadId)}`;
+      `/api/ampp-proxy/api/${encodeURIComponent(workloadId)}`;
 
     if (!requestUrl.pathname.startsWith(proxyPrefix)) {
-      throw new BadRequestException('Invalid AMPP proxy path');
+      throw new BadRequestException('Invalid AMPP API proxy path');
     }
 
     const pathname = requestUrl.pathname.slice(proxyPrefix.length) || '/';
     return `${pathname}${requestUrl.search}`;
+  }
+
+  private getRawBody(req: Request): Buffer | undefined {
+    if (req.body === undefined || req.body === null) {
+      return undefined;
+    }
+
+    if (!Buffer.isBuffer(req.body)) {
+      throw new BadRequestException(
+        'AMPP API request body was not captured as raw bytes',
+      );
+    }
+
+    return req.body.length ? req.body : undefined;
   }
 
   private getPublicOrigin(req: Request): string {
@@ -116,21 +112,6 @@ export class AmppProxyController {
     } catch {
       throw new BadRequestException('Invalid proxy host');
     }
-  }
-
-  private isWorkloadPagePath(
-    upstreamPath: string,
-    workloadId: string,
-  ): boolean {
-    const target = new URL(upstreamPath, 'http://ampp-proxy.local');
-    return (
-      target.pathname
-        .split('/')
-        .filter(Boolean)
-        .map((segment) => decodeURIComponent(segment))
-        .includes(workloadId) ||
-      [...target.searchParams.values()].includes(workloadId)
-    );
   }
 
   private saveSession(req: Request): Promise<void> {
