@@ -7,6 +7,7 @@ export type ChildWorkload = {
   id: string;
   name: string;
   applicationName: string;
+  packageName: string;
   pageType: WorkloadPageType;
   fabricId?: string;
   nodeId?: string;
@@ -17,6 +18,7 @@ export type AllowedWorkload = {
   name: string;
   is_parent: 0 | 1;
   applicationName?: string;
+  packageName?: string;
   pageType: WorkloadPageType;
   fabricId?: string;
   nodeId?: string;

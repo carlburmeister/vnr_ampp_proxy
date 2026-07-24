@@ -4,6 +4,7 @@ export type ExtractedWorkload = {
   id: string;
   name: string;
   applicationName: string;
+  packageName: string;
   fabricId: string;
   nodeId: string;
 };
@@ -22,6 +23,7 @@ export type UserDBWorkload = {
 
 export type AllowedWorkload = UserDBWorkload & {
   applicationName?: string;
+  packageName?: string;
   fabricId?: string;
   nodeId?: string;
   child_workloads?: ChildWorkload[];

@@ -58,7 +58,8 @@ describe('AuthService', () => {
         return {
           id: workloadId,
           name: 'Production 1',
-          applicationName: 'GV.Production',
+          applicationName: 'Production',
+          packageName: 'GV.AMPP.Apps.Production',
           fabricId: 'mock-fabric-001',
           state: {
             nodeId: 'mock-node-001',
@@ -69,7 +70,8 @@ describe('AuthService', () => {
       return {
         id: workloadId,
         name: 'Standalone workload 1',
-        applicationName: 'GV.Player',
+        applicationName: 'Player',
+        packageName: 'GV.AMPP.Apps.Player',
         fabricId: 'mock-fabric-001',
         state: {
           nodeId: 'mock-node-001',
@@ -83,7 +85,8 @@ describe('AuthService', () => {
           workload: {
             id: 'child-workload-001',
             name: 'Mock Child Workload',
-            applicationName: 'GV.MiniMixer',
+            applicationName: 'Mini Mix X 8 Inputs HD',
+            packageName: 'GV.AMPP.Apps.MiniMixer',
             fabricId: 'mock-fabric-001',
             state: {
               nodeId: 'mock-node-001',
@@ -94,7 +97,8 @@ describe('AuthService', () => {
           workload: {
             id: 'direct-workload-001',
             name: 'Individual workload 1',
-            applicationName: 'GV.Player',
+            applicationName: 'Audio Mix X 16 Channels',
+            packageName: 'GV.AMPP.Apps.AudioMixer',
             fabricId: 'mock-fabric-001',
             state: {
               nodeId: 'mock-node-001',
@@ -130,11 +134,14 @@ describe('AuthService', () => {
           name: 'Production 1',
           is_parent: 1,
           pageType: 'custom',
+          applicationName: 'Production',
+          packageName: 'GV.AMPP.Apps.Production',
           child_workloads: [
             {
               id: 'child-workload-001',
               name: 'Mock Child Workload',
-              applicationName: 'GV.MiniMixer',
+              applicationName: 'Mini Mix X 8 Inputs HD',
+              packageName: 'GV.AMPP.Apps.MiniMixer',
               is_parent: 0,
               pageType: 'custom',
               fabricId: 'mock-fabric-001',
@@ -143,7 +150,8 @@ describe('AuthService', () => {
             {
               id: 'direct-workload-001',
               name: 'Individual workload 1',
-              applicationName: 'GV.Player',
+              applicationName: 'Audio Mix X 16 Channels',
+              packageName: 'GV.AMPP.Apps.AudioMixer',
               is_parent: 0,
               pageType: 'ampp-ui',
               fabricId: 'mock-fabric-001',
@@ -156,7 +164,8 @@ describe('AuthService', () => {
           name: 'Standalone workload 1',
           is_parent: 0,
           pageType: 'custom',
-          applicationName: 'GV.Player',
+          applicationName: 'Player',
+          packageName: 'GV.AMPP.Apps.Player',
           fabricId: 'mock-fabric-001',
           nodeId: 'mock-node-001',
         },

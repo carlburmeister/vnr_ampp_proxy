@@ -29,6 +29,7 @@ export type LoginResult = {
 // Define the precise structure of your data
 type AmppWorkloadResponse = {
     applicationName: string;
+    packageName: string;
     id: string;
     name: string;
     fabricId: string;
@@ -73,6 +74,7 @@ export class AuthService {
           ...workload,
           name: workload_resp.name,
           applicationName: workload_resp.applicationName,
+          packageName: workload_resp.packageName,
           fabricId: workload_resp.fabricId,
           nodeId: workload_resp.nodeId,
           child_workloads: await this.getChildWorkloads(
@@ -113,6 +115,7 @@ export class AuthService {
           ...workload,
           name: workload_resp.name,
           applicationName: workload_resp.applicationName,
+          packageName: workload_resp.packageName,
           fabricId: workload_resp.fabricId,
           nodeId: workload_resp.nodeId,
         };
@@ -173,6 +176,7 @@ export class AuthService {
       id: response.id,
       name: response.name,
       applicationName: response.applicationName,
+      packageName: response.packageName,
       fabricId: response.fabricId,
       nodeId: response.state?.nodeId ?? '',
     };
@@ -197,7 +201,8 @@ export class AuthService {
     return (response?.workloads ?? []).map((item) => ({
       id: item.workload.id,
       name: item.workload.name,
-      applicationName: item.workload.applicationName ?? item.workload.packageName ?? '',
+      applicationName: item.workload.applicationName ?? '',
+      packageName: item.workload.packageName ?? '',
       fabricId: item.workload.fabricId,
       nodeId: item.workload.state?.nodeId ?? '',
       is_parent: 0,
@@ -222,6 +227,7 @@ export class AuthService {
           id: workload.id,
           name: workload.name,
           applicationName: workload.applicationName ?? '',
+          packageName: workload.packageName ?? '',
           fabricId: workload.fabricId ?? '',
           nodeId: workload.nodeId ?? '',
         };
