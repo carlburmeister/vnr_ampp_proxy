@@ -79,7 +79,7 @@ export class AuthService {
           nodeId: workload_resp.nodeId,
           child_workloads: await this.getChildWorkloads(
             workload.id,
-            'custom',
+            workload.pageType,
           ),
         };
       }),

@@ -69,6 +69,18 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
 
     setWorkloadActionError('');
 
+    if (workload.is_parent === 1) {
+      setExpandedWorkloadIds((currentExpandedWorkloadIds) => (
+        currentExpandedWorkloadIds.includes(workload.id)
+          ? currentExpandedWorkloadIds.filter(
+              (workloadId) => workloadId !== workload.id,
+            )
+          : [...currentExpandedWorkloadIds, workload.id]
+      ));
+
+      return;
+    }
+
     if (
       workload.pageType === 'custom' &&
       hasWorkloadApplicationLaunchHandler(workload)
@@ -88,18 +100,6 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
         workload,
         () => getAmppUiLaunchTarget(workload),
       );
-
-      return;
-    }
-
-    if (workload.is_parent === 1) {
-      setExpandedWorkloadIds((currentExpandedWorkloadIds) => (
-        currentExpandedWorkloadIds.includes(workload.id)
-          ? currentExpandedWorkloadIds.filter(
-              (workloadId) => workloadId !== workload.id,
-            )
-          : [...currentExpandedWorkloadIds, workload.id]
-      ));
 
       return;
     }
