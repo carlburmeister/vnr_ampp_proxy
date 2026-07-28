@@ -209,8 +209,15 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
             {workloads.map((workload: AllowedWorkload) => {
               const isExpanded =
                 expandedWorkloadIds.includes(workload.id);
-              const childWorkloads =
-                workload.child_workloads ?? [];
+              const childWorkloads = [
+                ...(workload.child_workloads ?? []),
+              ].sort((firstWorkload, secondWorkload) =>
+                firstWorkload.name.localeCompare(
+                  secondWorkload.name,
+                  undefined,
+                  { numeric: true },
+                ),
+              );
 
               return (
                 <div

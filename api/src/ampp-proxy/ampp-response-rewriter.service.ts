@@ -275,6 +275,11 @@ export class AmppResponseRewriterService {
       );
     }
 
+    rewritten = this.insertIntoHead(
+      rewritten,
+      this.createUiOverrideStyles(),
+    );
+
     return this.insertIntoHead(
       rewritten,
       this.createRuntimeRewriteScript(responseUrl, workloadId),
@@ -551,6 +556,16 @@ export class AmppResponseRewriterService {
       `/api/ampp-proxy/ui/${encodeURIComponent(workloadId)}` +
       pathname
     );
+  }
+
+  private createUiOverrideStyles(): string {
+    return `<style data-ampp-proxy-ui-overrides>
+.gv-layout-menubar,
+a[href*="/cluster/store/announcements"],
+.MuiBox-root:has(.gv-icon-interface-options) {
+  display: none !important;
+}
+</style>`;
   }
 
   private createRuntimeRewriteScript(
