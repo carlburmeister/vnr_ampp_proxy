@@ -1,4 +1,4 @@
-# /usr/local/etc/nginx/servers/vnr-dev.conf
+# /usr/local/etc/nginx/servers/AMVVPP-dev.conf
 server {
     listen 8081;
     server_name localhost 127.0.0.1;

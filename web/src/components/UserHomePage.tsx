@@ -59,7 +59,7 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
   //  handleWorkloadClick()
   /*-------------------------------------------------------------*/
   async function handleWorkloadClick(workload: AllowedWorkload) {
-    console.log('[VNR WebRTC] workload button clicked', {
+    console.log('[AMVVPP WebRTC] workload button clicked', {
       workloadId: workload.id,
       workloadName: workload.name,
       applicationName: workload.applicationName,
@@ -168,7 +168,7 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
       newTab.close();
 
       console.error(
-        '[VNR] open workload application failed',
+        '[AMVVPP] open workload application failed',
         err,
       );
 

@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { json, raw, urlencoded } from 'express';
 import session from 'express-session';
+import { NestExpressApplication } from '@nestjs/platform-express';
 
 import { MysqlSessionStore } from './auth/mysql-session.store';
 
@@ -12,7 +13,10 @@ import { AppModule } from './app.module';
 import { AmppWebSocketProxyService } from './ampp-proxy/ampp-websocket-proxy.service';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bodyParser: false });
+  
+  //const app = await NestFactory.create(AppModule, { bodyParser: false });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {bodyParser: false});
+  
   const config = app.get(ConfigService);
 
   app.setGlobalPrefix('/api');
@@ -34,13 +38,17 @@ async function bootstrap() {
 
   const isProduction = process.env.NODE_ENV === 'production';
 
+  if (isProduction) {
+    app.set('trust proxy', 1);
+  }
+
   const sessionSecret = config.get<string>('SESSION_SECRET');
 
   if (!sessionSecret || sessionSecret.length < 32) {
     throw new Error('SESSION_SECRET must be set and at least 32 characters long');
   }
 
-  const sessionCookieName = config.get<string>('SESSION_COOKIE_NAME') ?? 'vnr.sid';
+  const sessionCookieName = config.get<string>('SESSION_COOKIE_NAME') ?? 'amvvpp.sid';
   const sessionStore = new MysqlSessionStore({
     host: config.get<string>('MYSQL_HOST'),
     port: Number(config.get<string>('MYSQL_PORT') ?? 3306),
@@ -76,6 +84,15 @@ async function bootstrap() {
     }),
   );
 
-  await app.listen(process.env.PORT ?? 3000);
+  //await app.listen(process.env.PORT ?? 3000);
+
+  const port = process.env.PORT ?? 3000;
+
+  if (isProduction) {
+    await app.listen(port, '127.0.0.1');
+  } else {
+    await app.listen(port);
+  }
+
 }
 bootstrap();

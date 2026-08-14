@@ -23,7 +23,7 @@ export async function subscribeToWorkloadNotifications(workloadId: string) {
 /*--------------------------------------------------------------------------*/
 //  ()
 /*--------------------------------------------------------------------------*/
-export async function getState(workloadId: string, reconKey = 'vnr_app') {
+export async function getState(workloadId: string, reconKey = 'amvvpp_app') {
   const response = await fetch('/api/ampp/control/get-state', {
     method: 'POST',
     credentials: 'include',

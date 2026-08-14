@@ -58,7 +58,7 @@ export class AmppControlService implements OnModuleDestroy
   private readonly webRtcSignalEvents$ = new Subject<IPlatformNotification>();
   private notificationListenerStarted = false;
   private notificationHandlersAttached = false;
-  private readonly webRtcMailboxId = `vnr-webrtc--${randomUUID()}`;
+  private readonly webRtcMailboxId = `AMVVPP-webrtc--${randomUUID()}`;
   private webRtcMailboxCreated = false;
   private webRtcMailboxCreatePromise?: Promise<{
     created: boolean;
@@ -169,14 +169,14 @@ export class AmppControlService implements OnModuleDestroy
   async listChildWorkloads(
     workloadId: string,
   ): Promise<AmppChildWorkloadsResponse> {
-    webRtcDebugLog('[VNR WebRTC backend] listChildWorkloads request', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] listChildWorkloads request', {
       workloadId,
     });
 
     const client = await this.getClient();
     const response = await client.listChildWorkloads(workloadId);
 
-    webRtcDebugLog('[VNR WebRTC backend] listChildWorkloads response', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] listChildWorkloads response', {
       workloadId,
       childWorkloadCount: response.workloads?.length ?? 0,
       childWorkloads: response.workloads?.map((item) => ({
@@ -208,7 +208,7 @@ export class AmppControlService implements OnModuleDestroy
   /*--------------------------------------------------------------------------*/
   //
   /*--------------------------------------------------------------------------*/
-  async executeMacro(uuid: string, reconKey = 'vnr_app') {
+  async executeMacro(uuid: string, reconKey = 'amvvpp_app') {
     const client = await this.getClient();
     return client.executeMacro(uuid, reconKey);
   }
@@ -229,7 +229,7 @@ export class AmppControlService implements OnModuleDestroy
       input.application,
       input.command,
       input.payload,
-      input.reconKey ?? 'vnr_app',
+      input.reconKey ?? 'amvvpp_app',
     );
   }
   /*--------------------------------------------------------------------------*/
@@ -244,7 +244,7 @@ export class AmppControlService implements OnModuleDestroy
     }
 
     const client = await this.getClient();
-    await client.getState(input.workloadId, input.reconKey ?? 'vnr_app');
+    await client.getState(input.workloadId, input.reconKey ?? 'amvvpp_app');
 
     return { sent: true };
   }
@@ -275,7 +275,7 @@ export class AmppControlService implements OnModuleDestroy
       input.applicationName,
       'controlstate',
       { Index: input.index, Program: input.isProgram, Preview: input.isPreview },
-      'vnr_app',
+      'amvvpp_app',
     );
 
     return { sent: true, index: input.index };
@@ -309,7 +309,7 @@ export class AmppControlService implements OnModuleDestroy
       input.applicationName,
       'keystate',
       { transitionType: input.transitionType, active: input.active },
-      'vnr_app',
+      'amvvpp_app',
     );
 
     return { sent: true };
@@ -359,7 +359,7 @@ export class AmppControlService implements OnModuleDestroy
           data.topic.startsWith('gv.webrtc.') ||
           /\.senders\.[^.]+\.stats$/.test(data.topic)
         ) {
-          webRtcDebugLog('[VNR WebRTC backend] raw WebRTC notification received', {
+          webRtcDebugLog('[AMVVPP WebRTC backend] raw WebRTC notification received', {
             topic: data.topic,
             contentSummary: this.summarizeSignalContent(data.content),
           });
@@ -372,7 +372,7 @@ export class AmppControlService implements OnModuleDestroy
     }
 
     if (!this.notificationListenerStarted) {
-      webRtcDebugLog('[VNR WebRTC backend] starting AMPP notification listener');
+      webRtcDebugLog('[AMVVPP WebRTC backend] starting AMPP notification listener');
 
       const started = await client.startNotificationListener();
 
@@ -382,7 +382,7 @@ export class AmppControlService implements OnModuleDestroy
 
       this.notificationListenerStarted = true;
 
-      webRtcDebugLog('[VNR WebRTC backend] AMPP notification listener started');
+      webRtcDebugLog('[AMVVPP WebRTC backend] AMPP notification listener started');
     }
 
     return { started: true };
@@ -393,14 +393,14 @@ export class AmppControlService implements OnModuleDestroy
   async subscribeToNotificationTopic(topic: string) {
     const client = await this.getClient();
 
-    webRtcDebugLog('[VNR WebRTC backend] subscribing to notification topic', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] subscribing to notification topic', {
       topic,
     });
 
     await this.startNotificationListener();
     await client.subscribeToNotification(topic);
 
-    webRtcDebugLog('[VNR WebRTC backend] subscribed to notification topic', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] subscribed to notification topic', {
       topic,
     });
 
@@ -440,14 +440,14 @@ export class AmppControlService implements OnModuleDestroy
   private async createWebRtcMailbox() {
     const client = await this.getClient();
 
-    webRtcDebugLog('[VNR WebRTC backend] creating WebRTC mailbox', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] creating WebRTC mailbox', {
       mailboxId: this.webRtcMailboxId,
     });
 
     try {
       const result = await client.createMailbox(this.webRtcMailboxId);
 
-      webRtcDebugLog('[VNR WebRTC backend] WebRTC mailbox created', {
+      webRtcDebugLog('[AMVVPP WebRTC backend] WebRTC mailbox created', {
         mailboxId: this.webRtcMailboxId,
         responseMailboxId: result.mailboxId,
         status: result.status,
@@ -459,7 +459,7 @@ export class AmppControlService implements OnModuleDestroy
     } catch (err) {
       this.webRtcMailboxCreatePromise = undefined;
 
-      console.error('[VNR WebRTC backend] WebRTC mailbox create failed', {
+      console.error('[AMVVPP WebRTC backend] WebRTC mailbox create failed', {
         mailboxId: this.webRtcMailboxId,
         error: err instanceof Error ? err.message : err,
       });
@@ -475,7 +475,7 @@ export class AmppControlService implements OnModuleDestroy
    */
   private async subscribeToWebRtcMailboxTopic(topic: string) {
     if (this.webRtcMailboxTopics.has(topic)) {
-      webRtcDebugLog('[VNR WebRTC backend] mailbox already subscribed to notification topic', {
+      webRtcDebugLog('[AMVVPP WebRTC backend] mailbox already subscribed to notification topic', {
         mailboxId: this.webRtcMailboxId,
         topic,
       });
@@ -491,7 +491,7 @@ export class AmppControlService implements OnModuleDestroy
     const client = await this.getClient();
     await this.ensureWebRtcMailbox();
 
-    webRtcDebugLog('[VNR WebRTC backend] subscribing mailbox to notification topic', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] subscribing mailbox to notification topic', {
       mailboxId: this.webRtcMailboxId,
       topic,
     });
@@ -501,7 +501,7 @@ export class AmppControlService implements OnModuleDestroy
     this.webRtcMailboxTopics.add(topic);
     this.startWebRtcMailboxPolling();
 
-    webRtcDebugLog('[VNR WebRTC backend] mailbox subscribed to notification topic', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] mailbox subscribed to notification topic', {
       mailboxId: this.webRtcMailboxId,
       topic,
       status: result.status,
@@ -524,7 +524,7 @@ export class AmppControlService implements OnModuleDestroy
     this.webRtcMailboxPollingStarted = true;
     this.webRtcMailboxPollingStopped = false;
 
-    webRtcDebugLog('[VNR WebRTC backend] starting WebRTC mailbox polling', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] starting WebRTC mailbox polling', {
       mailboxId: this.webRtcMailboxId,
     });
 
@@ -543,7 +543,7 @@ export class AmppControlService implements OnModuleDestroy
         const response = await client.pollMailboxNotifications(this.webRtcMailboxId, 1000, 10000);
 
         if (response.notifications.length > 0) {
-          webRtcDebugLog('[VNR WebRTC backend] mailbox poll received notifications', {
+          webRtcDebugLog('[AMVVPP WebRTC backend] mailbox poll received notifications', {
             mailboxId: this.webRtcMailboxId,
             notificationCount: response.notifications.length,
             topics: response.notifications.map((notification) => notification.topic),
@@ -555,7 +555,7 @@ export class AmppControlService implements OnModuleDestroy
         }
       } catch (err) {
         if (!this.webRtcMailboxPollingStopped) {
-          console.error('[VNR WebRTC backend] WebRTC mailbox poll failed', {
+          console.error('[AMVVPP WebRTC backend] WebRTC mailbox poll failed', {
             mailboxId: this.webRtcMailboxId,
             error: err instanceof Error ? err.message : err,
           });
@@ -576,7 +576,7 @@ export class AmppControlService implements OnModuleDestroy
     const topicIsSubscribed = this.webRtcMailboxTopics.has(topic);
     const topicLooksWebRtc = topic.startsWith('gv.webrtc.') || /\.senders\.[^.]+\.stats$/.test(topic);
 
-    webRtcDebugLog('[VNR WebRTC backend] mailbox notification received', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] mailbox notification received', {
       mailboxId: this.webRtcMailboxId,
       topic,
       topicIsSubscribed,
@@ -585,7 +585,7 @@ export class AmppControlService implements OnModuleDestroy
     });
 
     if (!topicIsSubscribed && !topicLooksWebRtc) {
-      webRtcDebugLog('[VNR WebRTC backend] ignoring mailbox notification for unrelated topic', {
+      webRtcDebugLog('[AMVVPP WebRTC backend] ignoring mailbox notification for unrelated topic', {
         mailboxId: this.webRtcMailboxId,
         topic,
       });
@@ -645,7 +645,7 @@ export class AmppControlService implements OnModuleDestroy
       throw new BadRequestException('engineInstanceId is required');
     }
 
-    webRtcDebugLog('[VNR WebRTC backend] startWebRtcSession request', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] startWebRtcSession request', {
       workloadId,
       engineInstanceId,
     });
@@ -656,7 +656,7 @@ export class AmppControlService implements OnModuleDestroy
     const senderTopic = `gv.engine.${engineInstanceId}.senders.${workloadId}`;
     const statsTopic = `${senderTopic}.stats`;
 
-    webRtcDebugLog('[VNR WebRTC backend] generated WebRTC signaling topics', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] generated WebRTC signaling topics', {
       workloadId,
       engineInstanceId,
       tunnelId,
@@ -669,7 +669,7 @@ export class AmppControlService implements OnModuleDestroy
     await this.subscribeToWebRtcMailboxTopic(receiverTopic);
     await this.subscribeToWebRtcMailboxTopic(statsTopic);
 
-    webRtcDebugLog('[VNR WebRTC backend] WebRTC session ready', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] WebRTC session ready', {
       workloadId,
       engineInstanceId,
       tunnelId,
@@ -710,7 +710,7 @@ export class AmppControlService implements OnModuleDestroy
       throw new BadRequestException('topic is required');
     }
 
-    webRtcDebugLog('[VNR WebRTC backend] publishWebRtcSignal request', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] publishWebRtcSignal request', {
       workloadId,
       engineInstanceId,
       topic,
@@ -722,7 +722,7 @@ export class AmppControlService implements OnModuleDestroy
     const client = await this.getClient();
     const publishResult = await client.publishRawNotificationHttp(topic, input.content ?? {}, workloadId);
 
-    webRtcDebugLog('[VNR WebRTC backend] publishWebRtcSignal result', {
+    webRtcDebugLog('[AMVVPP WebRTC backend] publishWebRtcSignal result', {
       sent: publishResult.sent,
       topic,
       status: publishResult.status,

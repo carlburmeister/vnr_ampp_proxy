@@ -1,9 +1,9 @@
 
-> vnr_app@1.0.0 dev
+> AMVVPP_app@1.0.0 dev
 > concurrently "npm run start:dev --prefix api" "npm run dev:web:delay"
 
 [1] 
-[1] > vnr_app@1.0.0 dev:web:delay
+[1] > AMVVPP_app@1.0.0 dev:web:delay
 [1] > sleep 4 && npm run dev --prefix web
 [1] 
 [0] 

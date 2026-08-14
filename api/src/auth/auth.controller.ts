@@ -13,7 +13,7 @@ import type { Request, Response } from 'express';
 import { LoginDto } from './dto/login.dto';
 import { AuthService } from './auth.service';
 
-const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME ?? 'vnr.sid';
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME ?? 'amvvpp.sid';
 
 @Controller('auth')
 export class AuthController {

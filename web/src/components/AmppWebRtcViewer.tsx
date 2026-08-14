@@ -109,7 +109,7 @@ export function AmppWebRtcViewer({
 
     async function start() {
       try {
-        debugLog('[VNR WebRTC] viewer mounted; starting session', {
+        debugLog('[AMVVPP WebRTC] viewer mounted; starting session', {
           workloadId,
           engineInstanceId,
           title,
@@ -125,7 +125,7 @@ export function AmppWebRtcViewer({
         senderTopicRef.current = session.senderTopic;
         activeTunnelIdRef.current = session.tunnelId;
 
-        debugLog('[VNR WebRTC] session created', session);
+        debugLog('[AMVVPP WebRTC] session created', session);
 
         setStatus(`Subscribed to ${session.receiverTopic}`);
 
@@ -135,7 +135,7 @@ export function AmppWebRtcViewer({
 
         eventSourceRef.current = source;
 
-        debugLog('[VNR WebRTC] opening SSE signaling stream', {
+        debugLog('[AMVVPP WebRTC] opening SSE signaling stream', {
           streamUrl: '/api/ampp/control/webrtc/stream',
           receiverTopic: session.receiverTopic,
           statsTopic: session.statsTopic,
@@ -146,7 +146,7 @@ export function AmppWebRtcViewer({
             return;
           }
 
-          debugLog('[VNR WebRTC] SSE stream opened; sending discovery', {
+          debugLog('[AMVVPP WebRTC] SSE stream opened; sending discovery', {
             discoveryTopic: session.discoveryTopic,
             receiverTopic: session.receiverTopic,
             tunnelId: session.tunnelId,
@@ -166,7 +166,7 @@ export function AmppWebRtcViewer({
 
           const notification = JSON.parse(event.data) as WebRtcNotification;
 
-          debugLog('[VNR WebRTC] SSE notification received', {
+          debugLog('[AMVVPP WebRTC] SSE notification received', {
             topic: notification.topic,
             expectedReceiverTopic: sessionRef.current.receiverTopic,
             expectedStatsTopic: sessionRef.current.statsTopic,
@@ -177,7 +177,7 @@ export function AmppWebRtcViewer({
             notification.topic !== sessionRef.current.receiverTopic &&
             notification.topic !== sessionRef.current.statsTopic
           ) {
-            debugLog('[VNR WebRTC] ignoring SSE notification for unrelated topic', {
+            debugLog('[AMVVPP WebRTC] ignoring SSE notification for unrelated topic', {
               topic: notification.topic,
             });
             return;
@@ -189,13 +189,13 @@ export function AmppWebRtcViewer({
 
         source.onerror = (event) => {
           if (!cancelled) {
-            debugError('[VNR WebRTC] SSE signaling stream error/reconnect', event);
+            debugError('[AMVVPP WebRTC] SSE signaling stream error/reconnect', event);
             setStatus('WebRTC signaling stream reconnecting...');
           }
         };
       } catch (err) {
         if (!cancelled) {
-          debugError('[VNR WebRTC] viewer start failed', err);
+          debugError('[AMVVPP WebRTC] viewer start failed', err);
           setError(err instanceof Error ? err.message : 'Unknown WebRTC error');
           setStatus('WebRTC start failed');
         }
@@ -203,7 +203,7 @@ export function AmppWebRtcViewer({
     }
 
     async function publishSignal(topic: string, content: unknown) {
-      debugLog('[VNR WebRTC] publishing signal', {
+      debugLog('[AMVVPP WebRTC] publishing signal', {
         topic,
         contentSummary: summarizeSignalContent(content),
       });
@@ -227,7 +227,7 @@ export function AmppWebRtcViewer({
         const senderId = findSenderId(content);
         const senderSdp = getDiscoverySenderSdp(content);
 
-        debugLog('[VNR WebRTC] discovery result received; waiting for Mocha SDP offer', {
+        debugLog('[AMVVPP WebRTC] discovery result received; waiting for Mocha SDP offer', {
           senderId,
           hasSenderSdp: Boolean(senderSdp),
           senderSdpLength: senderSdp.length,
@@ -237,14 +237,14 @@ export function AmppWebRtcViewer({
         if (senderId) {
           senderTopicRef.current = `gv.engine.${engineInstanceId}.senders.${senderId}`;
 
-          debugLog('[VNR WebRTC] sender topic updated from discovery result', {
+          debugLog('[AMVVPP WebRTC] sender topic updated from discovery result', {
             senderTopic: senderTopicRef.current,
           });
 
           if (!initSentRef.current) {
             initSentRef.current = true;
 
-            debugLog('[VNR WebRTC] sending Mocha tunnel init message', {
+            debugLog('[AMVVPP WebRTC] sending Mocha tunnel init message', {
               senderTopic: senderTopicRef.current,
               receiverTopic: session.receiverTopic,
               tunnelId: session.tunnelId,
@@ -274,7 +274,7 @@ export function AmppWebRtcViewer({
           activeTunnelIdRef.current = content.tunnelId;
         }
 
-        debugLog('[VNR WebRTC] SDP offer received from Mocha', {
+        debugLog('[AMVVPP WebRTC] SDP offer received from Mocha', {
           tunnelId: content.tunnelId,
           sdpLength: sdp.length,
           iceServerCount: iceServers.length,
@@ -282,7 +282,7 @@ export function AmppWebRtcViewer({
         });
 
         if (!sdp) {
-          debugError('[VNR WebRTC] offer missing SDP', {
+          debugError('[AMVVPP WebRTC] offer missing SDP', {
             contentSummary: summarizeSignalContent(content),
           });
           throw new Error('WebRTC offer did not include SDP');
@@ -293,19 +293,19 @@ export function AmppWebRtcViewer({
         setStatus('Received offer; creating answer...');
         await peerConnection.setRemoteDescription({ type: 'offer', sdp });
 
-        debugLog('[VNR WebRTC] remote description set from Mocha offer', {
+        debugLog('[AMVVPP WebRTC] remote description set from Mocha offer', {
           signalingState: peerConnection.signalingState,
         });
 
         const answer = await peerConnection.createAnswer();
 
-        debugLog('[VNR WebRTC] local SDP answer created', {
+        debugLog('[AMVVPP WebRTC] local SDP answer created', {
           sdpLength: answer.sdp?.length ?? 0,
         });
 
         await peerConnection.setLocalDescription(answer);
 
-        debugLog('[VNR WebRTC] local description set; sending answer', {
+        debugLog('[AMVVPP WebRTC] local description set; sending answer', {
           signalingState: peerConnection.signalingState,
           senderTopic: senderTopicRef.current,
           tunnelId: activeTunnelIdRef.current || session.tunnelId,
@@ -324,7 +324,7 @@ export function AmppWebRtcViewer({
       }
 
       if (isAnswer(content)) {
-        debugLog('[VNR WebRTC] ignoring unexpected SDP answer because AMPP/Mocha should be the offerer', {
+        debugLog('[AMVVPP WebRTC] ignoring unexpected SDP answer because AMPP/Mocha should be the offerer', {
           tunnelId: content.tunnelId,
           contentSummary: summarizeSignalContent(content),
         });
@@ -334,21 +334,21 @@ export function AmppWebRtcViewer({
       if (isIceCandidate(content)) {
         const peerConnection = peerConnectionRef.current;
 
-        debugLog('[VNR WebRTC] remote ICE candidate received', {
+        debugLog('[AMVVPP WebRTC] remote ICE candidate received', {
           hasPeerConnection: Boolean(peerConnection),
           hasRemoteDescription: Boolean(peerConnection?.remoteDescription),
           contentSummary: summarizeSignalContent(content),
         });
 
         if (!peerConnection) {
-          debugWarn('[VNR WebRTC] ignoring remote ICE candidate before peer connection exists');
+          debugWarn('[AMVVPP WebRTC] ignoring remote ICE candidate before peer connection exists');
           return;
         }
 
         const candidate = getIceCandidate(content);
 
         if (!candidate) {
-          debugWarn('[VNR WebRTC] remote ICE candidate message did not include a parseable candidate', {
+          debugWarn('[AMVVPP WebRTC] remote ICE candidate message did not include a parseable candidate', {
             contentSummary: summarizeSignalContent(content),
           });
           return;
@@ -357,7 +357,7 @@ export function AmppWebRtcViewer({
         if (!peerConnection.remoteDescription) {
           queuedRemoteIceCandidatesRef.current.push(candidate);
 
-          debugLog('[VNR WebRTC] queued remote ICE candidate until remote description is set', {
+          debugLog('[AMVVPP WebRTC] queued remote ICE candidate until remote description is set', {
             queuedRemoteIceCandidateCount: queuedRemoteIceCandidatesRef.current.length,
           });
           return;
@@ -365,7 +365,7 @@ export function AmppWebRtcViewer({
 
         await peerConnection.addIceCandidate(candidate);
 
-        debugLog('[VNR WebRTC] remote ICE candidate added', {
+        debugLog('[AMVVPP WebRTC] remote ICE candidate added', {
           sdpMid: candidate.sdpMid,
           sdpMLineIndex: candidate.sdpMLineIndex,
         });
@@ -377,7 +377,7 @@ export function AmppWebRtcViewer({
         return peerConnectionRef.current;
       }
 
-      debugLog('[VNR WebRTC] creating RTCPeerConnection', {
+      debugLog('[AMVVPP WebRTC] creating RTCPeerConnection', {
         iceServers,
       });
 
@@ -387,14 +387,14 @@ export function AmppWebRtcViewer({
         const session = sessionRef.current;
 
         if (!event.candidate || !session) {
-          debugLog('[VNR WebRTC] local ICE gathering complete or session missing', {
+          debugLog('[AMVVPP WebRTC] local ICE gathering complete or session missing', {
             hasCandidate: Boolean(event.candidate),
             hasSession: Boolean(session),
           });
           return;
         }
 
-        debugLog('[VNR WebRTC] local ICE candidate generated', {
+        debugLog('[AMVVPP WebRTC] local ICE candidate generated', {
           candidateType: event.candidate.type,
           protocol: event.candidate.protocol,
           address: event.candidate.address,
@@ -414,7 +414,7 @@ export function AmppWebRtcViewer({
       };
 
       peerConnection.ontrack = (event) => {
-        debugLog('[VNR WebRTC] remote media track received', {
+        debugLog('[AMVVPP WebRTC] remote media track received', {
           trackKind: event.track.kind,
           trackId: event.track.id,
           streamCount: event.streams.length,
@@ -427,7 +427,7 @@ export function AmppWebRtcViewer({
       };
 
       peerConnection.onconnectionstatechange = () => {
-        debugLog('[VNR WebRTC] connection state changed', {
+        debugLog('[AMVVPP WebRTC] connection state changed', {
           connectionState: peerConnection.connectionState,
           iceConnectionState: peerConnection.iceConnectionState,
           iceGatheringState: peerConnection.iceGatheringState,
@@ -448,7 +448,7 @@ export function AmppWebRtcViewer({
       };
 
       peerConnection.oniceconnectionstatechange = () => {
-        debugLog('[VNR WebRTC] ICE connection state changed', {
+        debugLog('[AMVVPP WebRTC] ICE connection state changed', {
           iceConnectionState: peerConnection.iceConnectionState,
         });
 
@@ -470,13 +470,13 @@ export function AmppWebRtcViewer({
       };
 
       peerConnection.onicegatheringstatechange = () => {
-        debugLog('[VNR WebRTC] ICE gathering state changed', {
+        debugLog('[AMVVPP WebRTC] ICE gathering state changed', {
           iceGatheringState: peerConnection.iceGatheringState,
         });
       };
 
       peerConnection.onsignalingstatechange = () => {
-        debugLog('[VNR WebRTC] signaling state changed', {
+        debugLog('[AMVVPP WebRTC] signaling state changed', {
           signalingState: peerConnection.signalingState,
         });
       };
@@ -492,7 +492,7 @@ export function AmppWebRtcViewer({
         return;
       }
 
-      debugLog('[VNR WebRTC] adding queued remote ICE candidates', {
+      debugLog('[AMVVPP WebRTC] adding queued remote ICE candidates', {
         queuedRemoteIceCandidateCount: queuedCandidates.length,
       });
 
@@ -502,7 +502,7 @@ export function AmppWebRtcViewer({
     }
 
     return () => {
-      debugLog('[VNR WebRTC] viewer unmounting; closing SSE and peer connection', {
+      debugLog('[AMVVPP WebRTC] viewer unmounting; closing SSE and peer connection', {
         workloadId,
         engineInstanceId,
       });

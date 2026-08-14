@@ -30,7 +30,7 @@ export async function startWebRtcSession(
   workloadId: string,
   engineInstanceId: string,
 ): Promise<WebRtcSessionDetails> {
-  debugLog('[VNR WebRTC API] POST /api/ampp/control/webrtc/session', {
+  debugLog('[AMVVPP WebRTC API] POST /api/ampp/control/webrtc/session', {
     workloadId,
     engineInstanceId,
   });
@@ -44,7 +44,7 @@ export async function startWebRtcSession(
     body: JSON.stringify({ workloadId, engineInstanceId }),
   });
 
-  debugLog('[VNR WebRTC API] session response status', {
+  debugLog('[AMVVPP WebRTC API] session response status', {
     ok: response.ok,
     status: response.status,
   });
@@ -55,7 +55,7 @@ export async function startWebRtcSession(
 
   const json = await response.json();
 
-  debugLog('[VNR WebRTC API] session response body', json);
+  debugLog('[AMVVPP WebRTC API] session response body', json);
 
   return json;
 }
@@ -66,7 +66,7 @@ export async function sendWebRtcSignal(input: {
   topic: string;
   content: unknown;
 }) {
-  debugLog('[VNR WebRTC API] POST /api/ampp/control/webrtc/signal', {
+  debugLog('[AMVVPP WebRTC API] POST /api/ampp/control/webrtc/signal', {
     workloadId: input.workloadId,
     engineInstanceId: input.engineInstanceId,
     topic: input.topic,
@@ -82,7 +82,7 @@ export async function sendWebRtcSignal(input: {
     body: JSON.stringify(input),
   });
 
-  debugLog('[VNR WebRTC API] signal response status', {
+  debugLog('[AMVVPP WebRTC API] signal response status', {
     ok: response.ok,
     status: response.status,
     topic: input.topic,
@@ -94,7 +94,7 @@ export async function sendWebRtcSignal(input: {
 
   const json = await response.json();
 
-  debugLog('[VNR WebRTC API] signal response body', json);
+  debugLog('[AMVVPP WebRTC API] signal response body', json);
 
   return json;
 }

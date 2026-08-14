@@ -12,14 +12,14 @@ import {
 export async function getFlowMonitorLaunchTarget(
   workload: AllowedWorkload,
 ): Promise<WorkloadLaunchTarget> {
-  console.log('[VNR WebRTC] requesting Flow Monitor child workloads', {
+  console.log('[AMVVPP WebRTC] requesting Flow Monitor child workloads', {
     parentWorkloadId: workload.id,
   });
 
   const response = await listChildWorkloads(workload.id);
   const childWorkloads = response.workloads.map((item) => item.workload);
 
-  console.log('[VNR WebRTC] Flow Monitor child workloads received', {
+  console.log('[AMVVPP WebRTC] Flow Monitor child workloads received', {
     parentWorkloadId: workload.id,
     childWorkloadCount: childWorkloads.length,
     childWorkloads: childWorkloads.map((childWorkload) => ({
@@ -33,14 +33,14 @@ export async function getFlowMonitorLaunchTarget(
   const outputEngineWorkload = findFlowMonitorOutputEngine(childWorkloads);
 
   if (!outputEngineWorkload) {
-    console.error('[VNR WebRTC] no Flow Monitor output engine child workload found', {
+    console.error('[AMVVPP WebRTC] no Flow Monitor output engine child workload found', {
       parentWorkloadId: workload.id,
       expectedPackageName: FLOW_MONITOR_OUTPUT_ENGINE_PACKAGE_NAME,
     });
     throw new Error('No Flow Monitor WebRTC output engine child workload found.');
   }
 
-  console.log('[VNR WebRTC] Flow Monitor output engine selected', {
+  console.log('[AMVVPP WebRTC] Flow Monitor output engine selected', {
     parentWorkloadId: workload.id,
     engineInstanceId: outputEngineWorkload.id,
     engineName: outputEngineWorkload.name,

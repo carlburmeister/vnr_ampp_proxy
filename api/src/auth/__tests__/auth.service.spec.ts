@@ -46,7 +46,7 @@ describe('AuthService', () => {
         return {
           id: 'mock-user-001',
           username: 'admin',
-          displayName: 'Mock VNR Operator',
+          displayName: 'Mock AMVVPP Operator',
           passwordHash: 'password-hash',
         };
       }),
@@ -123,7 +123,7 @@ describe('AuthService', () => {
       user: {
         id: 'mock-user-001',
         username: 'admin',
-        displayName: 'Mock VNR Operator',
+        displayName: 'Mock AMVVPP Operator',
       },
       parentWorkloadId: 'parent-workload-001',
       fabricId: 'mock-fabric-001',

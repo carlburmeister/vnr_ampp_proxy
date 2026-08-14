@@ -41,7 +41,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   return (
     <section className="login-page">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h2>VNR App Login</h2>
+        <h2>AMVVPP App Login</h2>
         
         <p className="login-help">
         </p>

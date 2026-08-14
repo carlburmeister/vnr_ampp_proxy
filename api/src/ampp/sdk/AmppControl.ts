@@ -370,7 +370,7 @@ export class AmppControl extends events.EventEmitter {
    * protocols such as the WebRTC signaling messages used by Flow Monitor.
    */
   async publishRawNotification(topic: string, content: any): Promise<boolean> {
-    webRtcDebugLog('[VNR WebRTC SDK] publishRawNotification request', {
+    webRtcDebugLog('[AMVVPP WebRTC SDK] publishRawNotification request', {
       topic,
       contentSummary: this.summarizeNotificationContent(content),
       subscribedTopics: this.subscriptions,
@@ -380,14 +380,14 @@ export class AmppControl extends events.EventEmitter {
     try {
       const sent = await this.gvPlatform.publishNotification(topic, content);
 
-      webRtcDebugLog('[VNR WebRTC SDK] publishRawNotification response', {
+      webRtcDebugLog('[AMVVPP WebRTC SDK] publishRawNotification response', {
         topic,
         sent,
       });
 
       return sent;
     } catch (err) {
-      console.error('[VNR WebRTC SDK] publishRawNotification error', {
+      console.error('[AMVVPP WebRTC SDK] publishRawNotification error', {
         topic,
         error: err instanceof Error ? err.message : err,
       });
@@ -415,7 +415,7 @@ export class AmppControl extends events.EventEmitter {
     const contentJson = JSON.stringify(content);
     const source = sourceWorkloadId
       ? `/mocha/application/${sourceWorkloadId}`
-      : 'VNR WebRTC';
+      : 'AMVVPP WebRTC';
 
     const notification = {
       id: randomUUID(),
@@ -431,7 +431,7 @@ export class AmppControl extends events.EventEmitter {
       },
     };
 
-    webRtcDebugLog('[VNR WebRTC SDK] publishRawNotificationHttp request', {
+    webRtcDebugLog('[AMVVPP WebRTC SDK] publishRawNotificationHttp request', {
       url: '/notifications/api/v1/notifications',
       topic,
       notificationId: notification.id,
@@ -445,7 +445,7 @@ export class AmppControl extends events.EventEmitter {
       const response = await this.gvPlatform.post('/notifications/api/v1/notifications', notification);
       const sent = response.status >= 200 && response.status < 300;
 
-      webRtcDebugLog('[VNR WebRTC SDK] publishRawNotificationHttp response', {
+      webRtcDebugLog('[AMVVPP WebRTC SDK] publishRawNotificationHttp response', {
         topic,
         sent,
         status: response.status,
@@ -460,7 +460,7 @@ export class AmppControl extends events.EventEmitter {
         topic,
       };
     } catch (err: any) {
-      console.error('[VNR WebRTC SDK] publishRawNotificationHttp error', {
+      console.error('[AMVVPP WebRTC SDK] publishRawNotificationHttp error', {
         topic,
         status: err?.response?.status,
         statusText: err?.response?.statusText,
@@ -497,7 +497,7 @@ export class AmppControl extends events.EventEmitter {
       mailboxTTL: 1500000,
     };
 
-    webRtcDebugLog('[VNR WebRTC SDK] createMailbox request', {
+    webRtcDebugLog('[AMVVPP WebRTC SDK] createMailbox request', {
       url: '/notifications/api/v1/mailbox',
       mailboxId,
       requestSummary: this.summarizeNotificationContent(requestBody),
@@ -507,7 +507,7 @@ export class AmppControl extends events.EventEmitter {
       const response = await this.gvPlatform.post('/notifications/api/v1/mailbox', requestBody);
       const created = response.status >= 200 && response.status < 300;
 
-      webRtcDebugLog('[VNR WebRTC SDK] createMailbox response', {
+      webRtcDebugLog('[AMVVPP WebRTC SDK] createMailbox response', {
         mailboxId,
         created,
         status: response.status,
@@ -526,7 +526,7 @@ export class AmppControl extends events.EventEmitter {
         secret: response.data?.secret,
       };
     } catch (err: any) {
-      console.error('[VNR WebRTC SDK] createMailbox error', {
+      console.error('[AMVVPP WebRTC SDK] createMailbox error', {
         mailboxId,
         status: err?.response?.status,
         statusText: err?.response?.statusText,
@@ -557,7 +557,7 @@ export class AmppControl extends events.EventEmitter {
 
     const url = `/notifications/api/v1/mailbox/${encodeURIComponent(mailboxId)}/subscribe/${encodeURIComponent(topic)}`;
 
-    webRtcDebugLog('[VNR WebRTC SDK] subscribeMailboxToNotification request', {
+    webRtcDebugLog('[AMVVPP WebRTC SDK] subscribeMailboxToNotification request', {
       url,
       mailboxId,
       topic,
@@ -567,7 +567,7 @@ export class AmppControl extends events.EventEmitter {
       const response = await this.gvPlatform.post(url, null);
       const subscribed = response.status >= 200 && response.status < 300;
 
-      webRtcDebugLog('[VNR WebRTC SDK] subscribeMailboxToNotification response', {
+      webRtcDebugLog('[AMVVPP WebRTC SDK] subscribeMailboxToNotification response', {
         mailboxId,
         topic,
         subscribed,
@@ -584,7 +584,7 @@ export class AmppControl extends events.EventEmitter {
         topic,
       };
     } catch (err: any) {
-      console.error('[VNR WebRTC SDK] subscribeMailboxToNotification error', {
+      console.error('[AMVVPP WebRTC SDK] subscribeMailboxToNotification error', {
         mailboxId,
         topic,
         status: err?.response?.status,
@@ -619,7 +619,7 @@ export class AmppControl extends events.EventEmitter {
       const notifications = this.extractPlatformNotifications(response.data);
 
       if (notifications.length > 0) {
-        webRtcDebugLog('[VNR WebRTC SDK] pollMailboxNotifications response', {
+        webRtcDebugLog('[AMVVPP WebRTC SDK] pollMailboxNotifications response', {
           mailboxId,
           notificationCount: notifications.length,
           topics: notifications.map((notification) => notification.topic),
@@ -634,7 +634,7 @@ export class AmppControl extends events.EventEmitter {
         notifications,
       };
     } catch (err: any) {
-      console.error('[VNR WebRTC SDK] pollMailboxNotifications error', {
+      console.error('[AMVVPP WebRTC SDK] pollMailboxNotifications error', {
         mailboxId,
         status: err?.response?.status,
         statusText: err?.response?.statusText,
@@ -662,7 +662,7 @@ export class AmppControl extends events.EventEmitter {
   private onNotification = (notification: IPlatformNotification) => {
     notificationDebugLog('[AMPP notifications] platform notification received', notification);
 
-    webRtcDebugLog('[VNR WebRTC SDK] raw SignalR notification received', {
+    webRtcDebugLog('[AMVVPP WebRTC SDK] raw SignalR notification received', {
       topic: notification.topic,
       account: notification.account,
       source: notification.source,
@@ -687,7 +687,7 @@ export class AmppControl extends events.EventEmitter {
         ? JSON.parse(notification.content)
         : notification.content;
     } catch {
-      webRtcDebugWarn('[VNR WebRTC SDK] raw SignalR notification content could not be parsed as JSON', {
+      webRtcDebugWarn('[AMVVPP WebRTC SDK] raw SignalR notification content could not be parsed as JSON', {
         topic: notification.topic,
         contentType: typeof notification.content,
       });

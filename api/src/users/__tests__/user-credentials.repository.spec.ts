@@ -25,7 +25,7 @@ describe('UserCredentialsRepository', () => {
       [
         {
           user_id: 'mock-user-001',
-          client_name: 'Mock VNR Operator',
+          client_name: 'Mock AMVVPP Operator',
           username: 'operator',
           password_hash: 'secret',
         },
@@ -47,7 +47,7 @@ describe('UserCredentialsRepository', () => {
     await expect(repository.findByUsername(' Operator ')).resolves.toEqual({
       id: 'mock-user-001',
       username: 'operator',
-      displayName: 'Mock VNR Operator',
+      displayName: 'Mock AMVVPP Operator',
       passwordHash: 'secret',
     });
 
