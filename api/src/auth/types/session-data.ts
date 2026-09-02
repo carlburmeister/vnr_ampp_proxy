@@ -12,6 +12,7 @@ declare module 'express-session' {
     nodeId?: string; 
     allowedWorkloads?: AllowedWorkload[];
     amppCookieJar?: ReturnType<CookieJar['toJSON']>;
+    amppAccessToken?: string;
   }
 }
 

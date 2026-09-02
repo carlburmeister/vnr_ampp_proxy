@@ -5,6 +5,8 @@ import type { SessionData } from 'express-session';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { CookieJar } from 'tough-cookie';
 
+import { AmppBearerTokenService } from './ampp-bearer-token.service';
+import { AmppBrowserSecurityService } from './ampp-browser-security.service';
 import {
   AmppCookieHttpService,
   type AmppCookieHttpResponse,
@@ -26,6 +28,8 @@ export class AmppProxyService {
 
   constructor(
     private readonly config: ConfigService,
+    private readonly bearerToken: AmppBearerTokenService,
+    private readonly browserSecurity: AmppBrowserSecurityService,
     private readonly http: AmppCookieHttpService,
     private readonly responseRewriter: AmppResponseRewriterService,
     private readonly sessionBroker: AmppSessionBrokerService,
@@ -94,15 +98,24 @@ export class AmppProxyService {
       throw new BadGatewayException('AMPP utility session is not authenticated');
     }
 
+    this.captureOidcAccessToken(
+      session,
+      requestPath,
+      response,
+      frontendSessionId,
+    );
+
     amppProxySessionDebugLog(
       `AMPP session request completed status=${response.status} path=${requestPath}`,
       frontendSessionId,
     );
 
-    return this.responseRewriter.rewrite(
-      workloadId,
-      publicOrigin,
-      response,
+    return this.browserSecurity.secureUiResponse(
+      this.responseRewriter.rewrite(
+        workloadId,
+        publicOrigin,
+        response,
+      ),
     );
   }
 
@@ -121,7 +134,9 @@ export class AmppProxyService {
       session,
       upstreamPath,
     );
-    const response = await this.requestApiResource(
+    const sessionToken = this.bearerToken.getSessionToken(session);
+    let token = sessionToken ?? (await this.bearerToken.getToken());
+    let response = await this.requestApiResource(
       cookieJar,
       method,
       upstreamPath,
@@ -129,7 +144,25 @@ export class AmppProxyService {
       body,
       workloadId,
       publicOrigin,
+      token,
     );
+
+    if (response.status === 401 && sessionToken) {
+      this.bearerToken.clearSessionToken(session);
+    } else if (response.status === 401) {
+      this.bearerToken.invalidate();
+      token = await this.bearerToken.getToken();
+      response = await this.requestApiResource(
+        cookieJar,
+        method,
+        upstreamPath,
+        browserHeaders,
+        body,
+        workloadId,
+        publicOrigin,
+        token,
+      );
+    }
 
     this.sessionBroker.saveCookieJar(
       frontendSessionId,
@@ -147,6 +180,53 @@ export class AmppProxyService {
       publicOrigin,
       response,
     );
+  }
+
+  private captureOidcAccessToken(
+    session: SessionData,
+    requestPath: string,
+    response: AmppCookieHttpResponse,
+    frontendSessionId: string,
+  ): void {
+    const requestUrl = new URL(requestPath, this.platformUrl);
+
+    if (
+      requestUrl.pathname.toLowerCase() !== '/identity/connect/authorize' ||
+      response.status < 300 ||
+      response.status >= 400
+    ) {
+      return;
+    }
+
+    const location = this.firstHeader(response.headers.location);
+
+    if (!location) {
+      return;
+    }
+
+    try {
+      const redirectUrl = new URL(location, this.platformUrl);
+
+      if (redirectUrl.origin !== this.platformUrl.origin) {
+        return;
+      }
+
+      const accessToken = new URLSearchParams(
+        redirectUrl.hash.replace(/^#/, ''),
+      ).get('access_token');
+
+      if (!accessToken) {
+        return;
+      }
+
+      session.amppAccessToken = accessToken;
+      amppProxySessionDebugLog(
+        'Captured AMPP utility-user bearer token server-side',
+        frontendSessionId,
+      );
+    } catch {
+      // Leave malformed AMPP redirect responses unchanged.
+    }
   }
 
   private normalizeOidcAuthorizePath(
@@ -226,6 +306,7 @@ export class AmppProxyService {
     body: Buffer | undefined,
     workloadId: string,
     publicOrigin: string,
+    token: string,
   ): Promise<AmppCookieHttpResponse> {
     return this.http.request(cookieJar, upstreamPath, {
       method: method as Method,
@@ -234,6 +315,7 @@ export class AmppProxyService {
         workloadId,
         publicOrigin,
         upstreamPath,
+        token,
       ),
       data: body,
     });
@@ -278,6 +360,7 @@ export class AmppProxyService {
     workloadId: string,
     publicOrigin: string,
     upstreamPath: string,
+    token: string,
   ): Record<string, string> {
     const headers = this.createUpstreamHeaders(
       browserHeaders,
@@ -286,8 +369,9 @@ export class AmppProxyService {
       upstreamPath,
     );
 
+    headers.Authorization = `Bearer ${token}`;
+
     for (const [browserName, upstreamName] of [
-      ['authorization', 'Authorization'],
       ['content-type', 'Content-Type'],
       ['x-correlation-id', 'X-Correlation-Id'],
       ['x-requested-with', 'X-Requested-With'],

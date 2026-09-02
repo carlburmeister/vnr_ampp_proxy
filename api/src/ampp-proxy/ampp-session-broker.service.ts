@@ -60,6 +60,7 @@ export class AmppSessionBrokerService {
       frontendSessionId,
     );
     delete session.amppCookieJar;
+    delete session.amppAccessToken;
     return this.getCookieJar(frontendSessionId, session, returnPath);
   }
 

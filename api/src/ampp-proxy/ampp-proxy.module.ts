@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { AmppApiProxyController } from './ampp-api-proxy.controller';
+import { AmppBearerTokenService } from './ampp-bearer-token.service';
+import { AmppBrowserSecurityService } from './ampp-browser-security.service';
 import { AmppCookieHttpService } from './ampp-cookie-http.service';
 import { AmppProxyController } from './ampp-proxy.controller';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
@@ -15,6 +17,8 @@ import { AmppWebSocketProxyService } from './ampp-websocket-proxy.service';
   imports: [AuthModule],
   controllers: [AmppProxyController, AmppApiProxyController],
   providers: [
+    AmppBearerTokenService,
+    AmppBrowserSecurityService,
     AmppCookieHttpService,
     AmppProxyPolicyService,
     AmppResponseRewriterService,

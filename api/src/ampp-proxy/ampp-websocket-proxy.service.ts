@@ -14,6 +14,7 @@ import {
 import type { Duplex } from 'node:stream';
 import { CookieJar } from 'tough-cookie';
 
+import { AmppBearerTokenService } from './ampp-bearer-token.service';
 import {
   amppProxySessionDebugLog,
   amppProxySessionDebugWarn,
@@ -88,6 +89,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
 
   constructor(
     private readonly config: ConfigService,
+    private readonly bearerToken: AmppBearerTokenService,
     private readonly policy: AmppProxyPolicyService,
   ) {
     this.platformUrl = new URL(
@@ -217,7 +219,16 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     upstreamUrl.protocol =
       this.platformUrl.protocol === 'https:' ? 'wss:' : 'ws:';
 
+    const sessionToken = request.session
+      ? this.bearerToken.getSessionToken(request.session)
+      : undefined;
+    const token = sessionToken ?? (await this.bearerToken.getToken());
+    upstreamUrl.searchParams.delete('access_token');
+    upstreamUrl.searchParams.delete('id_token');
+    upstreamUrl.searchParams.set('access_token', token);
+
     const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
       Origin: this.platformUrl.origin,
     };
     const userAgent = this.firstHeader(request.headers['user-agent']);
@@ -291,6 +302,13 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
 
     upstream.on('unexpected-response', (_upgradeRequest, response) => {
       response.resume();
+
+      if (response.statusCode === 401 && request.session && sessionToken) {
+        this.bearerToken.clearSessionToken(request.session);
+      } else if (response.statusCode === 401) {
+        this.bearerToken.invalidate();
+      }
+
       amppProxySessionDebugWarn(
         `AMPP WebSocket rejected status=${response.statusCode ?? 0} path=${upstreamPath}`,
         request.sessionID,
