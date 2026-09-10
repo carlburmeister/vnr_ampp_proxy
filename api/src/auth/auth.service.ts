@@ -24,6 +24,7 @@ export type LoginResult = {
   fabricId: string;
   nodeId: string;
   allowedWorkloads: AllowedWorkload[];
+  amppAllowedWorkloadIds: string[];
 };
 
 // Define the precise structure of your data
@@ -128,6 +129,9 @@ export class AuthService {
     ];
 
     const firstWorkload = this.getFirstResolvedWorkload(allowedWorkloads);
+    const amppAllowedWorkloadIds = await this.getAmppAllowedWorkloadIds(
+      allowedWorkloads,
+    );
 
     return {
       user: {
@@ -139,6 +143,7 @@ export class AuthService {
       fabricId: firstWorkload?.fabricId ?? '',
       nodeId: firstWorkload?.nodeId ?? '',
       allowedWorkloads,
+      amppAllowedWorkloadIds,
     };
   }
   /*-------------------------------------------------------------*/
@@ -208,6 +213,50 @@ export class AuthService {
       is_parent: 0,
       pageType,
     }));
+  }
+  /*-------------------------------------------------------------*/
+  //  getAmppAllowedWorkloadIds()
+  /*-------------------------------------------------------------*/
+  private async getAmppAllowedWorkloadIds(
+    allowedWorkloads: AllowedWorkload[],
+  ): Promise<string[]> {
+    const allowedIds = new Set<string>();
+
+    const visit = async (
+      workloadId: string,
+      knownChildIds?: string[],
+    ): Promise<void> => {
+      if (allowedIds.has(workloadId)) {
+        return;
+      }
+
+      allowedIds.add(workloadId);
+
+      let childIds = knownChildIds;
+
+      if (!childIds) {
+        const response = (await this.amppControl.listChildWorkloads(
+          workloadId,
+        )) as unknown as AmppChildWorkloadsResponse;
+
+        childIds = (response?.workloads ?? []).map(
+          (item) => item.workload.id,
+        );
+      }
+
+      await Promise.all(childIds.map((childId) => visit(childId)));
+    };
+
+    await Promise.all(
+      allowedWorkloads.map((workload) =>
+        visit(
+          workload.id,
+          workload.child_workloads?.map((childWorkload) => childWorkload.id),
+        ),
+      ),
+    );
+
+    return [...allowedIds];
   }
   /*-------------------------------------------------------------*/
   //  getFirstResolvedWorkload()

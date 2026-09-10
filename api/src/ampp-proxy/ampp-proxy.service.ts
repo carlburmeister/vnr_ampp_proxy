@@ -164,6 +164,12 @@ export class AmppProxyService {
       );
     }
 
+    response = this.filterMatrixApiResponse(
+      session,
+      upstreamPath,
+      response,
+    );
+
     this.sessionBroker.saveCookieJar(
       frontendSessionId,
       session,
@@ -180,6 +186,196 @@ export class AmppProxyService {
       publicOrigin,
       response,
     );
+  }
+
+  private filterMatrixApiResponse(
+    session: SessionData,
+    upstreamPath: string,
+    response: AmppCookieHttpResponse,
+  ): AmppCookieHttpResponse {
+    const target = new URL(upstreamPath, this.platformUrl);
+    const pathname = target.pathname.replace(/\/+$/, '').toLowerCase();
+    const responseKeys: Record<string, string> = {
+      '/cluster/matrix/api/v1/producers': 'producers',
+      '/cluster/matrix/api/v1/consumers': 'consumers',
+      '/cluster/matrix/api/v1/routing/sources': 'sources',
+      '/cluster/matrix/api/v1/routing/destinations': 'destinations',
+    };
+    const responseKey = responseKeys[pathname];
+
+    if (!responseKey || response.status < 200 || response.status >= 300) {
+      return response;
+    }
+
+    const fabricId = target.searchParams.get('fabricId')?.toLowerCase();
+
+    if (!fabricId) {
+      throw new BadGatewayException('AMPP Matrix response is missing fabricId');
+    }
+
+    let parsed: Record<string, unknown>;
+
+    try {
+      parsed = JSON.parse(response.body.toString('utf8')) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      throw new BadGatewayException('AMPP Matrix response is not valid JSON');
+    }
+
+    const items = parsed[responseKey];
+
+    if (!Array.isArray(items)) {
+      throw new BadGatewayException(
+        `AMPP Matrix response is missing ${responseKey}`,
+      );
+    }
+
+    const allowedWorkloadIds = new Set(
+      (
+        session.amppAllowedWorkloadIds ??
+        (session.allowedWorkloads ?? []).flatMap((workload) => [
+          workload.id,
+          ...(workload.child_workloads ?? []).map(
+            (childWorkload) => childWorkload.id,
+          ),
+        ])
+      )
+        .filter(Boolean)
+        .map((id) => id.toLowerCase()),
+    );
+    const matrixAccess = (session.amppMatrixAccess ??= {});
+    const fabricAccess = (matrixAccess[fabricId] ??= {});
+    let filteredItems: unknown[];
+
+    if (responseKey === 'producers') {
+      filteredItems = items.flatMap((item) => {
+        const wrapper = this.asObject(item);
+        const producer = this.asObject(wrapper?.producer);
+        const workloadId = producer?.workloadId;
+
+        if (
+          typeof workloadId !== 'string' ||
+          !allowedWorkloadIds.has(workloadId.toLowerCase())
+        ) {
+          return [];
+        }
+
+        const routedConsumers = Array.isArray(producer.routedConsumers)
+          ? producer.routedConsumers.filter((consumer) => {
+              const routedConsumer = this.asObject(consumer);
+              return (
+                typeof routedConsumer?.workloadId === 'string' &&
+                allowedWorkloadIds.has(
+                  routedConsumer.workloadId.toLowerCase(),
+                )
+              );
+            })
+          : [];
+        const filteredProducer = {
+          ...producer,
+          ...(Array.isArray(producer.routedConsumers)
+            ? { routedConsumers }
+            : {}),
+          ...(producer.routedConsumerIds !== undefined
+            ? {
+                routedConsumerIds: routedConsumers.flatMap((consumer) => {
+                  const id = this.asObject(consumer)?.id;
+                  return typeof id === 'string' ? [id] : [];
+                }),
+              }
+            : {}),
+        };
+
+        return [{ ...wrapper, producer: filteredProducer }];
+      });
+      fabricAccess.producerIds = filteredItems.flatMap((item) => {
+        const id = this.asObject(this.asObject(item)?.producer)?.id;
+        return typeof id === 'string' ? [id] : [];
+      });
+    } else if (responseKey === 'consumers') {
+      filteredItems = items.filter((item) => {
+        const workloadId = this.asObject(
+          this.asObject(item)?.consumer,
+        )?.workloadId;
+        return (
+          typeof workloadId === 'string' &&
+          allowedWorkloadIds.has(workloadId.toLowerCase())
+        );
+      });
+      fabricAccess.consumerIds = filteredItems.flatMap((item) => {
+        const id = this.asObject(this.asObject(item)?.consumer)?.id;
+        return typeof id === 'string' ? [id] : [];
+      });
+    } else if (responseKey === 'sources') {
+      const producerIds = new Set(fabricAccess.producerIds ?? []);
+      const consumerIds = new Set(fabricAccess.consumerIds ?? []);
+
+      filteredItems = items.flatMap((item) => {
+        const source = this.asObject(item);
+
+        if (!source || !producerIds.has(String(source.id))) {
+          return [];
+        }
+
+        return [
+          {
+            ...source,
+            ...(Array.isArray(source.destinationIds)
+              ? {
+                  destinationIds: source.destinationIds.filter(
+                    (id) => typeof id === 'string' && consumerIds.has(id),
+                  ),
+                }
+              : {}),
+          },
+        ];
+      });
+    } else {
+      const producerIds = new Set(fabricAccess.producerIds ?? []);
+      const consumerIds = new Set(fabricAccess.consumerIds ?? []);
+
+      filteredItems = items.flatMap((item) => {
+        const destination = this.asObject(item);
+
+        if (!destination || !consumerIds.has(String(destination.id))) {
+          return [];
+        }
+
+        return [
+          {
+            ...destination,
+            ...(typeof destination.sourceId === 'string' &&
+            !producerIds.has(destination.sourceId)
+              ? { sourceId: null }
+              : {}),
+          },
+        ];
+      });
+    }
+
+    return {
+      ...response,
+      headers: {
+        ...response.headers,
+        'content-length': undefined,
+        etag: undefined,
+        'last-modified': undefined,
+      },
+      body: Buffer.from(
+        JSON.stringify({
+          ...parsed,
+          [responseKey]: filteredItems,
+        }),
+      ),
+    };
+  }
+
+  private asObject(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
   }
 
   private captureOidcAccessToken(

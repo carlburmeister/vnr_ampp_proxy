@@ -79,33 +79,38 @@ describe('AuthService', () => {
       };
     });
 
-    listChildWorkloads = jest.fn(async () => ({
-      workloads: [
-        {
-          workload: {
-            id: 'child-workload-001',
-            name: 'Mock Child Workload',
-            applicationName: 'Mini Mix X 8 Inputs HD',
-            packageName: 'GV.AMPP.Apps.MiniMixer',
-            fabricId: 'mock-fabric-001',
-            state: {
-              nodeId: 'mock-node-001',
-            },
-          },
-        },
-        {
-          workload: {
-            id: 'direct-workload-001',
-            name: 'Individual workload 1',
-            applicationName: 'Audio Mix X 16 Channels',
-            packageName: 'GV.AMPP.Apps.AudioMixer',
-            fabricId: 'mock-fabric-001',
-            state: {
-              nodeId: 'mock-node-001',
-            },
-          },
-        },
-      ],
+    listChildWorkloads = jest.fn(async (workloadId: string) => ({
+      workloads:
+        workloadId === 'parent-workload-001'
+          ? [
+              {
+                workload: {
+                  id: 'child-workload-001',
+                  name: 'Mock Child Workload',
+                  applicationName: 'Mini Mix X 8 Inputs HD',
+                  packageName: 'GV.AMPP.Apps.MiniMixer',
+                  fabricId: 'mock-fabric-001',
+                  state: {
+                    nodeId: 'mock-node-001',
+                  },
+                },
+              },
+              {
+                workload: {
+                  id: 'direct-workload-001',
+                  name: 'Individual workload 1',
+                  applicationName: 'Audio Mix X 16 Channels',
+                  packageName: 'GV.AMPP.Apps.AudioMixer',
+                  fabricId: 'mock-fabric-001',
+                  state: {
+                    nodeId: 'mock-node-001',
+                  },
+                },
+              },
+            ]
+          : workloadId === 'child-workload-001'
+            ? [{ workload: { id: 'internal-workload-001' } }]
+            : [],
     }));
 
     const amppControl = {
@@ -119,7 +124,9 @@ describe('AuthService', () => {
   it('loads parent children first and applies individual page type overrides', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
-    await expect(service.login('admin', 'password')).resolves.toMatchObject({
+    const result = await service.login('admin', 'password');
+
+    expect(result).toMatchObject({
       user: {
         id: 'mock-user-001',
         username: 'admin',
@@ -171,6 +178,16 @@ describe('AuthService', () => {
         },
       ],
     });
+
+    expect(result.amppAllowedWorkloadIds).toEqual(
+      expect.arrayContaining([
+        'parent-workload-001',
+        'child-workload-001',
+        'direct-workload-001',
+        'internal-workload-001',
+        'standalone-workload-001',
+      ]),
+    );
 
     expect(getUserDBWorkloads).toHaveBeenCalledWith('mock-user-001');
     expect(listChildWorkloads).toHaveBeenCalledWith('parent-workload-001');
