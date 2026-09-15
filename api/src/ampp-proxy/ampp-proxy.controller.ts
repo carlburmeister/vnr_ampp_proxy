@@ -14,6 +14,7 @@ import { SessionAuthGuard } from '../auth/session-auth.guard';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
 import { AmppResponseRewriterService } from './ampp-response-rewriter.service';
 import { AmppProxyService } from './ampp-proxy.service';
+import { AmppProxySessionService } from './ampp-proxy-session.service';
 
 @Controller('ampp-proxy')
 @UseGuards(SessionAuthGuard)
@@ -22,6 +23,7 @@ export class AmppProxyController {
     private readonly policy: AmppProxyPolicyService,
     private readonly responseRewriter: AmppResponseRewriterService,
     private readonly proxy: AmppProxyService,
+    private readonly proxySession: AmppProxySessionService,
   ) {}
 
   @Get('ui/:workloadId')
@@ -49,6 +51,7 @@ export class AmppProxyController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    const sessionSnapshot = this.proxySession.snapshot(req.session);
     const upstreamPath = this.getUpstreamPath(req, workloadId);
     const allowedPath = this.isWorkloadPagePath(upstreamPath, workloadId)
       ? this.policy.assertUiAccess(req.session, workloadId, upstreamPath)
@@ -66,7 +69,7 @@ export class AmppProxyController {
       this.getPublicOrigin(req),
     );
 
-    await this.saveSession(req);
+    await this.proxySession.saveIfChanged(req, sessionSnapshot);
 
     res.status(upstreamResponse.status);
 
@@ -131,19 +134,6 @@ export class AmppProxyController {
         .includes(workloadId) ||
       [...target.searchParams.values()].includes(workloadId)
     );
-  }
-
-  private saveSession(req: Request): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      req.session.save((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve();
-      });
-    });
   }
 
   private firstHeader(

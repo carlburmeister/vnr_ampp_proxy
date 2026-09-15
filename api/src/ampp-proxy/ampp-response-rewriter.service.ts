@@ -536,7 +536,7 @@ export class AmppResponseRewriterService {
       /^\/(?:discovery|configuration|identity|notifications|logging)\/api(?:\/|$)/i.test(
         pathname,
       ) ||
-      /^\/cluster\/(?:store|state|matrix)\/api(?:\/|$)/i.test(pathname) ||
+      /^\/cluster\/(?:store|state|matrix|control)\/api(?:\/|$)/i.test(pathname) ||
       /^\/mocha\/application\/[^/]+\/api(?:\/|$)/i.test(pathname)
     );
   }
@@ -590,7 +590,7 @@ const proxyWsOrigin=window.location.origin.replace(/^http/i,'ws');
 const proxyWsBase=proxyWsOrigin+c.wsProxyPath;
 const amppRootPaths=['/app/','/identity/','/assets/','/static/','/mocha/'];
 const isAmppRootPath=function(path){return amppRootPaths.some(function(prefix){return path.startsWith(prefix);});};
-const isAmppApiPath=function(path){return /^\\/(?:api|graphql)(?:\\/|$)/i.test(path)||/^\\/(?:discovery|configuration|identity|notifications|logging)\\/api(?:\\/|$)/i.test(path)||/^\\/cluster\\/(?:store|state|matrix)\\/api(?:\\/|$)/i.test(path)||/^\\/mocha\\/application\\/[^/]+\\/api(?:\\/|$)/i.test(path);};
+const isAmppApiPath=function(path){return /^\\/(?:api|graphql)(?:\\/|$)/i.test(path)||/^\\/(?:discovery|configuration|identity|notifications|logging)\\/api(?:\\/|$)/i.test(path)||/^\\/cluster\\/(?:store|state|matrix|control)\\/api(?:\\/|$)/i.test(path)||/^\\/mocha\\/application\\/[^/]+\\/api(?:\\/|$)/i.test(path);};
 const stripUiProxyPath=function(value){return String(value).split(c.httpProxyPath).join('');};
 const normalizeAuthorizeUrl=function(url){const path=url.pathname.startsWith(c.httpProxyPath)?url.pathname.slice(c.httpProxyPath.length)||'/':url.pathname;if(path.toLowerCase()!=='/identity/connect/authorize')return url;const redirectUri=url.searchParams.get('redirect_uri');if(redirectUri){try{const callback=new URL(redirectUri,c.upstreamHttpOrigin);const callbackPath=stripUiProxyPath(callback.pathname)||'/';url.searchParams.set('redirect_uri',new URL(callbackPath+callback.search+callback.hash,c.upstreamHttpOrigin).toString());}catch{}}const state=url.searchParams.get('state');if(state){try{const parsed=JSON.parse(state);if(parsed&&typeof parsed==='object'&&typeof parsed.to==='string'){parsed.to=stripUiProxyPath(parsed.to);url.searchParams.set('state',JSON.stringify(parsed));}}catch{}}return url;};
 const rewriteHttp=function(value){try{if(value===undefined||value===null)return value;const raw=String(value);const u=normalizeAuthorizeUrl(new URL(raw,c.upstreamHttpOrigin+c.upstreamDocumentPath));if(u.origin===window.location.origin){if(u.pathname.startsWith(c.httpProxyPath)){const upstreamPath=u.pathname.slice(c.httpProxyPath.length)||'/';const proxyBase=isAmppApiPath(upstreamPath)?proxyApiBase:proxyHttpBase;return proxyBase+upstreamPath+u.search+u.hash;}if(u.pathname.startsWith(c.apiProxyPath)||u.pathname.startsWith(c.wsProxyPath))return u.toString();if(isAmppApiPath(u.pathname))return proxyApiBase+u.pathname+u.search+u.hash;return isAmppRootPath(u.pathname)?proxyHttpBase+u.pathname+u.search+u.hash:raw;}if(u.origin!==c.upstreamHttpOrigin)return raw;const proxyBase=isAmppApiPath(u.pathname)?proxyApiBase:proxyHttpBase;return proxyBase+u.pathname+u.search+u.hash;}catch{return value;}};

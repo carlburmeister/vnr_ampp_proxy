@@ -19,6 +19,7 @@ import {
   amppProxySessionDebugLog,
   amppProxySessionDebugWarn,
 } from './ampp-proxy-session-debug';
+import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
 
 type WebSocketData = Buffer | ArrayBuffer | Buffer[] | string;
@@ -90,6 +91,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
   constructor(
     private readonly config: ConfigService,
     private readonly bearerToken: AmppBearerTokenService,
+    private readonly matrixFilter: AmppMatrixFilterService,
     private readonly policy: AmppProxyPolicyService,
   ) {
     this.platformUrl = new URL(
@@ -281,7 +283,24 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     });
 
     upstream.on('message', (data: WebSocketData) => {
-      this.relay(upstream, browser, data, typeof data !== 'string');
+      const isBinary = typeof data !== 'string';
+      const filteredData =
+        isBinary && request.session
+          ? this.matrixFilter.filterWebSocketMessage(
+              request.session,
+              this.toBuffer(data),
+            )
+          : data;
+
+      if (filteredData === undefined) {
+        amppProxySessionDebugLog(
+          `Dropped unauthorized AMPP Matrix WebSocket notification path=${upstreamPath}`,
+          request.sessionID,
+        );
+        return;
+      }
+
+      this.relay(upstream, browser, filteredData, isBinary);
     });
 
     upstream.on('close', (code: number, reason: unknown) => {
@@ -491,6 +510,22 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     }
 
     return data.length;
+  }
+
+  private toBuffer(data: WebSocketData): Buffer {
+    if (Buffer.isBuffer(data)) {
+      return data;
+    }
+
+    if (Array.isArray(data)) {
+      return Buffer.concat(data);
+    }
+
+    if (data instanceof ArrayBuffer) {
+      return Buffer.from(data);
+    }
+
+    return Buffer.from(data);
   }
 
   private rejectUpgrade(socket: Duplex, status: number): void {

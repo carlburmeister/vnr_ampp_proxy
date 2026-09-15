@@ -12,6 +12,7 @@ import type { Request, Response } from 'express';
 import { SessionAuthGuard } from '../auth/session-auth.guard';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
 import { AmppProxyService } from './ampp-proxy.service';
+import { AmppProxySessionService } from './ampp-proxy-session.service';
 
 @Controller('ampp-proxy')
 @UseGuards(SessionAuthGuard)
@@ -19,6 +20,7 @@ export class AmppApiProxyController {
   constructor(
     private readonly policy: AmppProxyPolicyService,
     private readonly proxy: AmppProxyService,
+    private readonly proxySession: AmppProxySessionService,
   ) {}
 
   @All('api/:workloadId/*upstreamPath')
@@ -27,6 +29,7 @@ export class AmppApiProxyController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    const sessionSnapshot = this.proxySession.snapshot(req.session);
     const method = req.method.toUpperCase();
     const upstreamPath = this.getUpstreamPath(req, workloadId);
     const body = this.getRawBody(req);
@@ -48,7 +51,7 @@ export class AmppApiProxyController {
       this.getPublicOrigin(req),
     );
 
-    await this.saveSession(req);
+    await this.proxySession.saveIfChanged(req, sessionSnapshot);
 
     res.status(upstreamResponse.status);
 
@@ -112,19 +115,6 @@ export class AmppApiProxyController {
     } catch {
       throw new BadRequestException('Invalid proxy host');
     }
-  }
-
-  private saveSession(req: Request): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      req.session.save((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve();
-      });
-    });
   }
 
   private firstHeader(

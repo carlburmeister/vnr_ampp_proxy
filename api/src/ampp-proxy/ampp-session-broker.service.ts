@@ -61,6 +61,7 @@ export class AmppSessionBrokerService {
     );
     delete session.amppCookieJar;
     delete session.amppAccessToken;
+    delete session.amppUserId;
     return this.getCookieJar(frontendSessionId, session, returnPath);
   }
 
@@ -69,10 +70,27 @@ export class AmppSessionBrokerService {
     session: SessionData,
     cookieJar: CookieJar,
   ): void {
-    session.amppCookieJar = cookieJar.toJSON();
+    const serializedCookieJar = cookieJar.toJSON();
+
+    if (
+      this.serializeCookieState(session.amppCookieJar) ===
+      this.serializeCookieState(serializedCookieJar)
+    ) {
+      return;
+    }
+
+    session.amppCookieJar = serializedCookieJar;
     amppProxySessionDebugLog(
       `Saved AMPP cookie jar cookies=${session.amppCookieJar.cookies?.length ?? 0}`,
       frontendSessionId,
+    );
+  }
+
+  private serializeCookieState(value: unknown): string {
+    return JSON.stringify(value, (key, item) =>
+      ['creation', 'lastAccessed', 'creationIndex'].includes(key)
+        ? undefined
+        : item,
     );
   }
 

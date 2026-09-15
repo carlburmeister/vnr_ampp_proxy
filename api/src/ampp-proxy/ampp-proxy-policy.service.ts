@@ -6,8 +6,34 @@ import {
 import type { SessionData } from 'express-session';
 
 import type { AllowedWorkload } from '../ampp/types/workload_types';
+import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 
 const API_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
+const GLOBAL_BOOTSTRAP_GET_PATHS = new Set([
+  '/identity/api/v1/user',
+  '/configuration/api/v1/configuration/gv/system/configuration',
+  '/configuration/api/v1/configurations/startswith/gv/multiviewer/layouts',
+  '/configuration/api/v1/configurations/startswith/gv/multiviewer/layout-categories',
+  '/configuration/api/v1/configurations/startswith/gv/multiviewer/v2/layouts',
+  '/discovery/api/v1/self',
+  '/discovery/api/v1/services',
+  '/cluster/store/api/store/account-notification',
+  '/cluster/store/api/store/messagescache',
+  '/cluster/store/api/store/settingscache',
+  '/cluster/store/api/store/apps',
+  '/cluster/store/api/store/allreleases',
+  '/api/v1/store/location/locations/cloud:still',
+  '/api/v1/store/still/avatars',
+  '/api/v1/store/still/stills/partner/logo.png',
+  '/api/v1/store/still/stills/partner/logo.svg',
+]);
+const GLOBAL_NOTIFICATION_TOPICS = new Set([
+  'gv.platform.identity.permissions',
+  'gv.platform.service.#',
+  'gv.platform.service.healthchanged',
+  'gv.cluster.matrix.producer.*',
+  'gv.cluster.matrix.consumer.*',
+]);
 const MATRIX_READ_PATHS = new Set([
   '/cluster/matrix/api/v1/producers',
   '/cluster/matrix/api/v1/consumers',
@@ -17,6 +43,8 @@ const MATRIX_READ_PATHS = new Set([
 
 @Injectable()
 export class AmppProxyPolicyService {
+  constructor(private readonly matrixFilter: AmppMatrixFilterService) {}
+
   assertUiAccess(
     session: SessionData,
     workloadId: string,
@@ -88,8 +116,10 @@ export class AmppProxyPolicyService {
       !this.isAllowedApiRequest(
         normalizedMethod,
         target,
+        session,
         allowedWorkloads,
         allowedWorkloadIds,
+        body,
       )
     ) {
       throw new ForbiddenException('AMPP API endpoint is not allowed');
@@ -97,6 +127,7 @@ export class AmppProxyPolicyService {
 
     this.assertWorkloadReferences(target, allowedWorkloadIds);
     this.assertBodyWorkloadReferences(body, allowedWorkloadIds);
+    this.assertAssignmentAccess(session, normalizedMethod, target, body);
 
     return `${target.pathname}${target.search}`;
   }
@@ -120,48 +151,82 @@ export class AmppProxyPolicyService {
   private isAllowedApiRequest(
     method: string,
     target: URL,
+    session: SessionData,
     allowedWorkloads: AllowedWorkload[],
     allowedWorkloadIds: Set<string>,
+    body: Buffer | undefined,
   ): boolean {
     const pathname = target.pathname.replace(/\/+$/, '').toLowerCase();
 
+    if (this.isAllowedGlobalBootstrapRequest(method, target)) {
+      return true;
+    }
+
     if (pathname.startsWith('/cluster/matrix/api/')) {
-      return this.isAllowedMatrixRequest(method, target, allowedWorkloads);
+      return this.isAllowedMatrixRequest(
+        method,
+        target,
+        session,
+        allowedWorkloads,
+        body,
+      );
     }
 
     if (
       pathname.startsWith('/cluster/state/api/') ||
+      pathname.startsWith('/cluster/control/api/') ||
       pathname.startsWith('/mocha/application/') ||
       pathname === '/discovery/api/v1/services'
     ) {
       return this.isAllowedWorkloadRequest(method, target, allowedWorkloadIds);
     }
 
+    // Historical note:
     // These global/bootstrap namespaces remain unchanged until the explicit
     // global endpoint allowlist is implemented separately.
-    const readOnlyRules = [
-      /^\/discovery\/api\//i,
-      /^\/configuration\/api\//i,
-      /^\/identity\/api\//i,
-      /^\/cluster\/store\/api\//i,
-      /^\/api\/v1\/store\//i,
-    ];
+    // The explicit allowlist is now handled before the scoped rules above.
+    if (pathname.startsWith('/notifications/api/')) {
+      return this.isAllowedNotificationRequest(
+        method,
+        target,
+        session,
+        allowedWorkloadIds,
+        body,
+      );
+    }
 
-    if (
-      method === 'GET' &&
-      readOnlyRules.some((rule) => rule.test(target.pathname))
-    ) {
+    return (
+      method === 'POST' &&
+      !target.search &&
+      pathname === '/logging/api/v2/events'
+    );
+  }
+
+  private isAllowedGlobalBootstrapRequest(
+    method: string,
+    target: URL,
+  ): boolean {
+    if (method !== 'GET' || target.search) {
+      return false;
+    }
+
+    const pathname = target.pathname.replace(/\/+$/, '').toLowerCase();
+
+    if (GLOBAL_BOOTSTRAP_GET_PATHS.has(pathname)) {
       return true;
     }
 
     if (
-      ['GET', 'POST'].includes(method) &&
-      /^\/notifications\/api\//i.test(target.pathname)
+      /^\/identity\/api\/v1\/users\/[0-9a-f]{32}\/login\/local$/.test(
+        pathname,
+      )
     ) {
       return true;
     }
 
-    return method === 'POST' && /^\/logging\/api\//i.test(target.pathname);
+    return /^\/configuration\/api\/v1\/configuration\/appstore-last-visited-[0-9a-f]{32}$/.test(
+      pathname,
+    );
   }
 
   private isAllowedWorkloadRequest(
@@ -181,6 +246,18 @@ export class AmppProxyPolicyService {
       return (
         API_METHODS.has(method) &&
         allowedIds.has(mochaMatch[1].toLowerCase())
+      );
+    }
+
+    const controlMatch = decodedPath.match(
+      /^\/cluster\/control\/api\/v1\/workload\/([^/]+)\/(start|stop)\/?$/i,
+    );
+
+    if (controlMatch) {
+      return (
+        method === 'POST' &&
+        !target.search &&
+        allowedIds.has(controlMatch[1].toLowerCase())
       );
     }
 
@@ -210,22 +287,33 @@ export class AmppProxyPolicyService {
   private isAllowedMatrixRequest(
     method: string,
     target: URL,
+    session: SessionData,
     allowedWorkloads: AllowedWorkload[],
+    body: Buffer | undefined,
   ): boolean {
     const pathname = target.pathname.replace(/\/+$/, '').toLowerCase();
 
-    if (method !== 'GET' || !MATRIX_READ_PATHS.has(pathname)) {
-      return false;
+    if (method === 'GET' && MATRIX_READ_PATHS.has(pathname)) {
+      const fabricIds = target.searchParams.getAll('fabricId');
+
+      return (
+        fabricIds.length === 1 &&
+        this.getAllowedFabricIds(allowedWorkloads).has(
+          fabricIds[0].toLowerCase(),
+        )
+      );
     }
 
-    const fabricIds = target.searchParams.getAll('fabricId');
+    const producerMatch = pathname.match(
+      /^\/cluster\/matrix\/api\/v1\/producer\/([^/]+)$/,
+    );
 
-    if (fabricIds.length !== 1) {
-      return false;
-    }
-
-    return this.getAllowedFabricIds(allowedWorkloads).has(
-      fabricIds[0].toLowerCase(),
+    return Boolean(
+      method === 'PUT' &&
+        !target.search &&
+        producerMatch &&
+        this.matrixFilter.isProducerIdAllowed(session, producerMatch[1]) &&
+        this.isAliasUpdateBody(body),
     );
   }
 
@@ -235,9 +323,510 @@ export class AmppProxyPolicyService {
       /^\/(?:discovery|configuration|identity|notifications|logging)\/api(?:\/|$)/i.test(
         pathname,
       ) ||
-      /^\/cluster\/(?:store|state|matrix)\/api(?:\/|$)/i.test(pathname) ||
+      /^\/cluster\/(?:store|state|matrix|control)\/api(?:\/|$)/i.test(pathname) ||
       /^\/mocha\/application\/[^/]+\/api(?:\/|$)/i.test(pathname)
     );
+  }
+
+  private isAllowedNotificationRequest(
+    method: string,
+    target: URL,
+    session: SessionData,
+    allowedWorkloadIds: Set<string>,
+    body: Buffer | undefined,
+  ): boolean {
+    const decodedPath = target.pathname
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .join('/');
+
+    if (
+      method === 'POST' &&
+      !target.search &&
+      /^\/notifications\/api\/v1\/mailbox\/?$/i.test(decodedPath)
+    ) {
+      return this.isAllowedMailboxCreate(body, allowedWorkloadIds);
+    }
+
+    if (
+      method === 'POST' &&
+      !target.search &&
+      /^\/notifications\/api\/v1\/notifications\/?$/i.test(decodedPath)
+    ) {
+      return this.isAllowedNotificationPublish(body, allowedWorkloadIds);
+    }
+
+    const notificationMatch = decodedPath.match(
+      /^\/notifications\/api\/v1\/notifications\/([^/]+)\/?$/i,
+    );
+
+    if (method === 'GET' && notificationMatch) {
+      return (
+        this.isAllowedMailbox(
+          session,
+          notificationMatch[1],
+          allowedWorkloadIds,
+        ) &&
+        this.isAllowedNotificationPollQuery(target)
+      );
+    }
+
+    const subscriptionMatch = decodedPath.match(
+      /^\/notifications\/api\/v1\/mailbox\/([^/]+)\/(subscribe|unsubscribe)\/(.+)$/i,
+    );
+
+    return Boolean(
+      method === 'POST' &&
+        !target.search &&
+        subscriptionMatch &&
+        this.isAllowedMailbox(
+          session,
+          subscriptionMatch[1],
+          allowedWorkloadIds,
+        ) &&
+        this.isAllowedNotificationTopic(
+          subscriptionMatch[3],
+          allowedWorkloadIds,
+          this.getAllowedFabricIds(session.allowedWorkloads ?? []),
+        ),
+    );
+  }
+
+  private isAllowedNotificationTopic(
+    topic: string,
+    allowedWorkloadIds: Set<string>,
+    allowedFabricIds: Set<string>,
+  ): boolean {
+    const normalizedTopic = topic.toLowerCase();
+
+    if (GLOBAL_NOTIFICATION_TOPICS.has(normalizedTopic)) {
+      return true;
+    }
+
+    const workloadPatterns = [
+      /^gv\.ampp\.workload\.([0-9a-f-]{36})\.roundtriptest$/i,
+      /^gv\.ampp\.apps\.[^.]+\.([0-9a-f-]{36})\.#$/i,
+      /^gv\.cluster\.workload\.([0-9a-f-]{36})\.#$/i,
+      /^gv\.webrtc\.([0-9a-f-]{36})\.[0-9a-f-]{36}$/i,
+    ];
+
+    for (const pattern of workloadPatterns) {
+      const match = topic.match(pattern);
+
+      if (match) {
+        return allowedWorkloadIds.has(match[1].toLowerCase());
+      }
+    }
+
+    const engineStats = topic.match(
+      /^gv\.engine\.([0-9a-f-]{36})\.(?:senders|receivers)\.([0-9a-f-]{36})\.stats$/i,
+    );
+
+    if (engineStats) {
+      return (
+        allowedWorkloadIds.has(engineStats[1].toLowerCase()) &&
+        allowedWorkloadIds.has(engineStats[2].toLowerCase())
+      );
+    }
+
+    const matrixFabric = topic.match(
+      /^gv\.cluster\.matrix\.([0-9a-f-]{36})\.#$/i,
+    );
+
+    return Boolean(
+      matrixFabric && allowedFabricIds.has(matrixFabric[1].toLowerCase()),
+    );
+  }
+
+  private isAllowedMailboxCreate(
+    body: Buffer | undefined,
+    allowedWorkloadIds: Set<string>,
+  ): boolean {
+    const parsed = this.parseJsonObject(body);
+    const id = parsed?.id;
+
+    return Boolean(
+      parsed &&
+        Object.keys(parsed).length === 5 &&
+        typeof id === 'string' &&
+        this.isAllowedMailboxId(id, allowedWorkloadIds) &&
+        parsed.durable === false &&
+        parsed.mailboxTTL === 1500000 &&
+        parsed.maximumLength === 10000 &&
+        parsed.subscription === 'gv',
+    );
+  }
+
+  private isAllowedNotificationPublish(
+    body: Buffer | undefined,
+    allowedWorkloadIds: Set<string>,
+  ): boolean {
+    const parsed = this.parseJsonObject(body);
+    const topic = parsed?.topic;
+    const source = parsed?.Source;
+
+    if (typeof topic !== 'string' || typeof source !== 'string') {
+      return false;
+    }
+
+    const workloadTopic = topic.match(
+      /^gv\.ampp\.workload\.([0-9a-f-]{36})\.roundtriptest$/i,
+    );
+
+    if (workloadTopic) {
+      const workloadId = workloadTopic[1].toLowerCase();
+
+      if (!allowedWorkloadIds.has(workloadId)) {
+        return false;
+      }
+
+      if (source === '/app/wrapper') {
+        return true;
+      }
+
+      const proxiedSource = source.match(
+        /^\/api\/ampp-proxy\/ui\/([0-9a-f-]{36})\/app\/wrapper$/i,
+      );
+
+      return Boolean(
+        proxiedSource && proxiedSource[1].toLowerCase() === workloadId,
+      );
+    }
+
+    const sourceWorkload = this.getNotificationSourceWorkload(source);
+
+    if (
+      !sourceWorkload ||
+      !allowedWorkloadIds.has(sourceWorkload.workloadId)
+    ) {
+      return false;
+    }
+
+    const engineTopic = topic.match(
+      /^gv\.engine\.([0-9a-f-]{36})\.(?:senders|receivers)(?:\.([0-9a-f-]{36}))?$/i,
+    );
+
+    if (!engineTopic) {
+      return false;
+    }
+
+    const engineId = engineTopic[1].toLowerCase();
+    const peerId = engineTopic[2]?.toLowerCase();
+
+    if (
+      !allowedWorkloadIds.has(engineId) ||
+      (peerId && !allowedWorkloadIds.has(peerId))
+    ) {
+      return false;
+    }
+
+    if (!sourceWorkload.proxied) {
+      return true;
+    }
+
+    return this.isAllowedWebRtcEnginePublish(
+      this.parseJsonStringObject(parsed?.content),
+      engineId,
+      Boolean(peerId),
+    );
+  }
+
+  private isAllowedWebRtcEnginePublish(
+    content: Record<string, unknown> | undefined,
+    engineId: string,
+    hasPeer: boolean,
+  ): boolean {
+    if (!content || typeof content.type !== 'string') {
+      return false;
+    }
+
+    const tunnelId =
+      typeof content.tunnelId === 'string' &&
+      /^[0-9a-f-]{36}$/i.test(content.tunnelId)
+        ? content.tunnelId.toLowerCase()
+        : undefined;
+    const receiverTopic =
+      typeof content.receiverTopic === 'string'
+        ? content.receiverTopic.match(
+            /^gv\.webrtc\.([0-9a-f-]{36})\.([0-9a-f-]{36})$/i,
+          )
+        : undefined;
+
+    if (content.type === 'discovery') {
+      return Boolean(
+        !hasPeer &&
+          receiverTopic &&
+          receiverTopic[1].toLowerCase() === engineId,
+      );
+    }
+
+    if (!hasPeer || !tunnelId) {
+      return false;
+    }
+
+    if (content.type === 'init') {
+      return Boolean(
+        receiverTopic &&
+          receiverTopic[1].toLowerCase() === engineId &&
+          receiverTopic[2].toLowerCase() === tunnelId,
+      );
+    }
+
+    if (content.type === 'newFullSdp') {
+      return (
+        (content.sdpType === 'offer' || content.sdpType === 'answer') &&
+        typeof content.sdp === 'string'
+      );
+    }
+
+    if (content.type === 'newCandidateSdp') {
+      return (
+        Number.isInteger(content.mLineIndex) &&
+        Number(content.mLineIndex) >= 0 &&
+        typeof content.sdp === 'string'
+      );
+    }
+
+    if (content.type === 'keepAlive') {
+      return true;
+    }
+
+    if (content.type !== 'requestReset' || typeof content.topic !== 'string') {
+      return false;
+    }
+
+    const resetTopic = content.topic.match(
+      /^gv\.webrtc\.([0-9a-f-]{36})\.([0-9a-f-]{36})$/i,
+    );
+
+    return Boolean(
+      resetTopic &&
+        resetTopic[1].toLowerCase() === engineId &&
+        resetTopic[2].toLowerCase() === tunnelId,
+    );
+  }
+
+  private getNotificationSourceWorkload(
+    source: string,
+  ): { workloadId: string; proxied: boolean } | undefined {
+    const directSource = source.match(
+      /^\/mocha\/application\/([0-9a-f-]{36})$/i,
+    );
+
+    if (directSource) {
+      return { workloadId: directSource[1].toLowerCase(), proxied: false };
+    }
+
+    const proxiedSource = source.match(
+      /^\/api\/ampp-proxy\/ui\/([0-9a-f-]{36})\/mocha\/application\/([0-9a-f-]{36})$/i,
+    );
+
+    if (
+      proxiedSource &&
+      proxiedSource[1].toLowerCase() === proxiedSource[2].toLowerCase()
+    ) {
+      return { workloadId: proxiedSource[1].toLowerCase(), proxied: true };
+    }
+
+    return undefined;
+  }
+
+  private isAllowedMailbox(
+    session: SessionData,
+    mailboxId: string,
+    allowedWorkloadIds: Set<string>,
+  ): boolean {
+    const normalizedId = mailboxId.toLowerCase();
+
+    return (
+      (session.amppNotificationMailboxIds ?? []).some(
+        (id) => id.toLowerCase() === normalizedId,
+      ) || this.isAllowedMailboxId(mailboxId, allowedWorkloadIds)
+    );
+  }
+
+  private isAllowedMailboxId(
+    mailboxId: string,
+    allowedWorkloadIds: Set<string>,
+  ): boolean {
+    if (/^ts-app\.wrapper--[0-9a-f-]{36}$/i.test(mailboxId)) {
+      return true;
+    }
+
+    const proxiedMailbox = mailboxId.match(
+      /^ts-api\.ampp-proxy\.ui\.([0-9a-f-]{36})\.app\.wrapper--[0-9a-f-]{36}$/i,
+    );
+
+    return Boolean(
+      proxiedMailbox &&
+        allowedWorkloadIds.has(proxiedMailbox[1].toLowerCase()),
+    );
+  }
+
+  private isAllowedNotificationPollQuery(target: URL): boolean {
+    const allowedNames = new Set(['count', 'timeout']);
+
+    if (
+      [...target.searchParams.keys()].some((name) => !allowedNames.has(name))
+    ) {
+      return false;
+    }
+
+    const count = target.searchParams.getAll('count');
+    const timeout = target.searchParams.getAll('timeout');
+
+    return (
+      count.length === 1 &&
+      timeout.length === 1 &&
+      /^\d+$/.test(count[0]) &&
+      /^\d+$/.test(timeout[0]) &&
+      Number(count[0]) >= 1 &&
+      Number(count[0]) <= 1000 &&
+      Number(timeout[0]) >= 0 &&
+      Number(timeout[0]) <= 60000
+    );
+  }
+
+  private isAliasUpdateBody(body: Buffer | undefined): boolean {
+    const parsed = this.parseJsonObject(body);
+
+    return Boolean(
+      parsed &&
+        Object.keys(parsed).length === 1 &&
+        typeof parsed.alias === 'string',
+    );
+  }
+
+  private assertAssignmentAccess(
+    session: SessionData,
+    method: string,
+    target: URL,
+    body: Buffer | undefined,
+  ): void {
+    if (method !== 'POST') {
+      return;
+    }
+
+    const path = target.pathname.replace(/\/+$/, '');
+    const parsed = this.parseJsonObject(body);
+    const inputMatch = path.match(
+      /^\/mocha\/application\/([^/]+)\/api\/v1\/app\/input\/\d+$/i,
+    );
+
+    if (inputMatch) {
+      this.assertProducerNameAssignment(
+        session,
+        inputMatch[1],
+        parsed?.name,
+      );
+      return;
+    }
+
+    const audioSourceMatch = path.match(
+      /^\/mocha\/application\/([^/]+)\/api\/v1\/channel\/\d+\/source$/i,
+    );
+
+    if (audioSourceMatch) {
+      this.assertProducerNameAssignment(
+        session,
+        audioSourceMatch[1],
+        parsed?.routedSource,
+      );
+      return;
+    }
+
+    if (/\/mocha\/application\/[^/]+\/api\/v1\/app\/sourceselect$/i.test(path)) {
+      const producer = this.asObject(parsed?.Producer);
+      const consumer = this.asObject(parsed?.Consumer);
+      const producerId = producer?.id;
+      const consumerId = consumer?.id;
+
+      if (
+        typeof producerId !== 'string' ||
+        typeof consumerId !== 'string' ||
+        !this.matrixFilter.isProducerIdAllowed(session, producerId) ||
+        !this.matrixFilter.isConsumerIdAllowed(session, consumerId)
+      ) {
+        throw new ForbiddenException('AMPP assignment route is not allowed');
+      }
+    }
+  }
+
+  private assertProducerNameAssignment(
+    session: SessionData,
+    workloadId: string,
+    value: unknown,
+  ): void {
+    const fabricId = this.getWorkloadFabricId(
+      session.allowedWorkloads ?? [],
+      workloadId,
+    );
+
+    if (
+      typeof value !== 'string' ||
+      (value &&
+        (!fabricId ||
+          !this.matrixFilter.isProducerNameAllowed(session, value, fabricId)))
+    ) {
+      throw new ForbiddenException('AMPP assignment producer is not allowed');
+    }
+  }
+
+  private getWorkloadFabricId(
+    allowedWorkloads: AllowedWorkload[],
+    workloadId: string,
+  ): string | undefined {
+    const normalizedId = workloadId.toLowerCase();
+
+    for (const workload of allowedWorkloads) {
+      if (workload.id.toLowerCase() === normalizedId) {
+        return workload.fabricId;
+      }
+
+      const child = (workload.child_workloads ?? []).find(
+        (item) => item.id.toLowerCase() === normalizedId,
+      );
+
+      if (child) {
+        return child.fabricId;
+      }
+    }
+
+    return undefined;
+  }
+
+  private parseJsonObject(
+    body: Buffer | undefined,
+  ): Record<string, unknown> | undefined {
+    if (!body?.length) {
+      return undefined;
+    }
+
+    try {
+      return this.asObject(JSON.parse(body.toString('utf8')));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private parseJsonStringObject(
+    value: unknown,
+  ): Record<string, unknown> | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    try {
+      return this.asObject(JSON.parse(value));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private asObject(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
   }
 
   private assertWorkloadReferences(
@@ -250,6 +839,7 @@ export class AmppProxyPolicyService {
       .join('/');
     const pathPatterns = [
       /\/cluster\/state\/api\/v1\/workload\/([^/?]+)/gi,
+      /\/cluster\/control\/api\/v1\/workload\/([^/?]+)/gi,
       /\/mocha\/application\/([^/?]+)/gi,
     ];
 
@@ -371,13 +961,13 @@ export class AmppProxyPolicyService {
   }
 
   private getAuthorizedWorkloadIds(session: SessionData): Set<string> {
-    const ids = session.amppAllowedWorkloadIds;
+    const ids = this.getAllowedWorkloadIds(session.allowedWorkloads ?? []);
 
-    if (ids?.length) {
-      return new Set(ids.map((id) => id.toLowerCase()));
+    for (const id of session.amppAllowedWorkloadIds ?? []) {
+      ids.add(id.toLowerCase());
     }
 
-    return this.getAllowedWorkloadIds(session.allowedWorkloads ?? []);
+    return ids;
   }
 
   private getAllowedWorkloadIds(

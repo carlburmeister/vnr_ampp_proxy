@@ -19,6 +19,7 @@ import {
   AmppResponseRewriterService,
   type AmppBrowserResponse,
 } from './ampp-response-rewriter.service';
+import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
 
@@ -31,6 +32,7 @@ export class AmppProxyService {
     private readonly bearerToken: AmppBearerTokenService,
     private readonly browserSecurity: AmppBrowserSecurityService,
     private readonly http: AmppCookieHttpService,
+    private readonly matrixFilter: AmppMatrixFilterService,
     private readonly responseRewriter: AmppResponseRewriterService,
     private readonly sessionBroker: AmppSessionBrokerService,
     private readonly utilityLogin: AmppUtilityLoginService,
@@ -164,7 +166,10 @@ export class AmppProxyService {
       );
     }
 
-    response = this.filterMatrixApiResponse(
+    this.captureAmppUserId(session, upstreamPath, response);
+    this.captureNotificationMailbox(session, method, upstreamPath, response);
+
+    response = this.matrixFilter.filterApiResponse(
       session,
       upstreamPath,
       response,
@@ -188,194 +193,73 @@ export class AmppProxyService {
     );
   }
 
-  private filterMatrixApiResponse(
+  private captureNotificationMailbox(
+    session: SessionData,
+    method: string,
+    upstreamPath: string,
+    response: AmppCookieHttpResponse,
+  ): void {
+    const target = new URL(upstreamPath, this.platformUrl);
+
+    if (
+      method.toUpperCase() !== 'POST' ||
+      target.pathname.replace(/\/+$/, '').toLowerCase() !==
+        '/notifications/api/v1/mailbox' ||
+      target.search ||
+      response.status < 200 ||
+      response.status >= 300
+    ) {
+      return;
+    }
+
+    try {
+      const mailbox = JSON.parse(response.body.toString('utf8')) as {
+        id?: unknown;
+      };
+
+      if (typeof mailbox.id !== 'string' || !mailbox.id) {
+        return;
+      }
+
+      const mailboxId = mailbox.id;
+      const ids = (session.amppNotificationMailboxIds ??= []);
+
+      if (!ids.some((id) => id.toLowerCase() === mailboxId.toLowerCase())) {
+        ids.push(mailboxId);
+      }
+    } catch {
+      // Leave the AMPP mailbox list unchanged if the response is malformed.
+    }
+  }
+
+  private captureAmppUserId(
     session: SessionData,
     upstreamPath: string,
     response: AmppCookieHttpResponse,
-  ): AmppCookieHttpResponse {
+  ): void {
     const target = new URL(upstreamPath, this.platformUrl);
-    const pathname = target.pathname.replace(/\/+$/, '').toLowerCase();
-    const responseKeys: Record<string, string> = {
-      '/cluster/matrix/api/v1/producers': 'producers',
-      '/cluster/matrix/api/v1/consumers': 'consumers',
-      '/cluster/matrix/api/v1/routing/sources': 'sources',
-      '/cluster/matrix/api/v1/routing/destinations': 'destinations',
-    };
-    const responseKey = responseKeys[pathname];
 
-    if (!responseKey || response.status < 200 || response.status >= 300) {
-      return response;
+    if (
+      target.pathname.replace(/\/+$/, '').toLowerCase() !==
+        '/identity/api/v1/user' ||
+      target.search ||
+      response.status < 200 ||
+      response.status >= 300
+    ) {
+      return;
     }
-
-    const fabricId = target.searchParams.get('fabricId')?.toLowerCase();
-
-    if (!fabricId) {
-      throw new BadGatewayException('AMPP Matrix response is missing fabricId');
-    }
-
-    let parsed: Record<string, unknown>;
 
     try {
-      parsed = JSON.parse(response.body.toString('utf8')) as Record<
-        string,
-        unknown
-      >;
+      const identity = JSON.parse(response.body.toString('utf8')) as {
+        id?: unknown;
+      };
+
+      if (typeof identity.id === 'string' && identity.id) {
+        session.amppUserId = identity.id;
+      }
     } catch {
-      throw new BadGatewayException('AMPP Matrix response is not valid JSON');
+      // Leave the AMPP user ID unset if the identity response is malformed.
     }
-
-    const items = parsed[responseKey];
-
-    if (!Array.isArray(items)) {
-      throw new BadGatewayException(
-        `AMPP Matrix response is missing ${responseKey}`,
-      );
-    }
-
-    const allowedWorkloadIds = new Set(
-      (
-        session.amppAllowedWorkloadIds ??
-        (session.allowedWorkloads ?? []).flatMap((workload) => [
-          workload.id,
-          ...(workload.child_workloads ?? []).map(
-            (childWorkload) => childWorkload.id,
-          ),
-        ])
-      )
-        .filter(Boolean)
-        .map((id) => id.toLowerCase()),
-    );
-    const matrixAccess = (session.amppMatrixAccess ??= {});
-    const fabricAccess = (matrixAccess[fabricId] ??= {});
-    let filteredItems: unknown[];
-
-    if (responseKey === 'producers') {
-      filteredItems = items.flatMap((item) => {
-        const wrapper = this.asObject(item);
-        const producer = this.asObject(wrapper?.producer);
-        const workloadId = producer?.workloadId;
-
-        if (
-          typeof workloadId !== 'string' ||
-          !allowedWorkloadIds.has(workloadId.toLowerCase())
-        ) {
-          return [];
-        }
-
-        const routedConsumers = Array.isArray(producer.routedConsumers)
-          ? producer.routedConsumers.filter((consumer) => {
-              const routedConsumer = this.asObject(consumer);
-              return (
-                typeof routedConsumer?.workloadId === 'string' &&
-                allowedWorkloadIds.has(
-                  routedConsumer.workloadId.toLowerCase(),
-                )
-              );
-            })
-          : [];
-        const filteredProducer = {
-          ...producer,
-          ...(Array.isArray(producer.routedConsumers)
-            ? { routedConsumers }
-            : {}),
-          ...(producer.routedConsumerIds !== undefined
-            ? {
-                routedConsumerIds: routedConsumers.flatMap((consumer) => {
-                  const id = this.asObject(consumer)?.id;
-                  return typeof id === 'string' ? [id] : [];
-                }),
-              }
-            : {}),
-        };
-
-        return [{ ...wrapper, producer: filteredProducer }];
-      });
-      fabricAccess.producerIds = filteredItems.flatMap((item) => {
-        const id = this.asObject(this.asObject(item)?.producer)?.id;
-        return typeof id === 'string' ? [id] : [];
-      });
-    } else if (responseKey === 'consumers') {
-      filteredItems = items.filter((item) => {
-        const workloadId = this.asObject(
-          this.asObject(item)?.consumer,
-        )?.workloadId;
-        return (
-          typeof workloadId === 'string' &&
-          allowedWorkloadIds.has(workloadId.toLowerCase())
-        );
-      });
-      fabricAccess.consumerIds = filteredItems.flatMap((item) => {
-        const id = this.asObject(this.asObject(item)?.consumer)?.id;
-        return typeof id === 'string' ? [id] : [];
-      });
-    } else if (responseKey === 'sources') {
-      const producerIds = new Set(fabricAccess.producerIds ?? []);
-      const consumerIds = new Set(fabricAccess.consumerIds ?? []);
-
-      filteredItems = items.flatMap((item) => {
-        const source = this.asObject(item);
-
-        if (!source || !producerIds.has(String(source.id))) {
-          return [];
-        }
-
-        return [
-          {
-            ...source,
-            ...(Array.isArray(source.destinationIds)
-              ? {
-                  destinationIds: source.destinationIds.filter(
-                    (id) => typeof id === 'string' && consumerIds.has(id),
-                  ),
-                }
-              : {}),
-          },
-        ];
-      });
-    } else {
-      const producerIds = new Set(fabricAccess.producerIds ?? []);
-      const consumerIds = new Set(fabricAccess.consumerIds ?? []);
-
-      filteredItems = items.flatMap((item) => {
-        const destination = this.asObject(item);
-
-        if (!destination || !consumerIds.has(String(destination.id))) {
-          return [];
-        }
-
-        return [
-          {
-            ...destination,
-            ...(typeof destination.sourceId === 'string' &&
-            !producerIds.has(destination.sourceId)
-              ? { sourceId: null }
-              : {}),
-          },
-        ];
-      });
-    }
-
-    return {
-      ...response,
-      headers: {
-        ...response.headers,
-        'content-length': undefined,
-        etag: undefined,
-        'last-modified': undefined,
-      },
-      body: Buffer.from(
-        JSON.stringify({
-          ...parsed,
-          [responseKey]: filteredItems,
-        }),
-      ),
-    };
-  }
-
-  private asObject(value: unknown): Record<string, unknown> | undefined {
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : undefined;
   }
 
   private captureOidcAccessToken(
@@ -569,6 +453,7 @@ export class AmppProxyService {
 
     for (const [browserName, upstreamName] of [
       ['content-type', 'Content-Type'],
+      ['if-match', 'If-Match'],
       ['x-correlation-id', 'X-Correlation-Id'],
       ['x-requested-with', 'X-Requested-With'],
       ['x-service-instance', 'X-Service-Instance'],
