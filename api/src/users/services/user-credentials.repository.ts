@@ -6,6 +6,7 @@ import {
   type RowDataPacket,
 } from 'mysql2/promise';
 
+import type { AllowedDashboard } from '../../ampp/types/dashboard_types';
 import type {
   UserDBWorkload,
   WorkloadPageType,
@@ -32,6 +33,13 @@ type UserDBWorkloadRow = RowDataPacket & {
   name: string;
   is_parent: 0 | 1 | boolean;
   page_type: WorkloadPageType;
+};
+
+type UserDashboardRow = RowDataPacket & {
+  dashboard_id: string;
+  associated_workload_id: string;
+  name: string;
+  page_type: AllowedDashboard['pageType'];
 };
 
 @Injectable()
@@ -109,6 +117,29 @@ export class UserCredentialsRepository implements OnModuleDestroy {
       id: row.workload_id,
       name: '',
       is_parent: row.is_parent ? 1 : 0,
+      pageType: row.page_type,
+    }));
+  }
+  /*--------------------------------------------------------------------*/
+  //  getUserDashboards()
+  /*--------------------------------------------------------------------*/
+  async getUserDashboards(userId: string): Promise<AllowedDashboard[]> {
+    const [rows] = await this.pool.execute<UserDashboardRow[]>(
+      `SELECT
+          dashboard_id,
+          associated_workload_id,
+          name,
+          page_type
+       FROM ampp_dashboards
+       WHERE user_id = ?
+       ORDER BY row_id ASC`,
+      [userId],
+    );
+
+    return rows.map((row) => ({
+      id: row.dashboard_id,
+      associatedWorkloadId: row.associated_workload_id,
+      name: row.name,
       pageType: row.page_type,
     }));
   }

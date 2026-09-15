@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 
 import './UserHomePage.css';
 
@@ -8,6 +8,7 @@ import { MINI_MIXER_APPLICATION_NAME } from '../features/miniMixer/minMixerConst
 import { getMiniMixerLaunchTarget } from '../features/miniMixer/minMixerWorkloadHandler';
 
 import type {
+  AllowedDashboard,
   AllowedWorkload,
   ChildWorkload,
   SessionData,
@@ -32,6 +33,7 @@ type WorkloadLaunchTargetResolver = () =>
 export function UserHomePage({ session, onLogout }: UserHomePageProps) 
 {  
   const workloads: AllowedWorkload[] = session.allowedWorkloads ?? [];
+  const dashboards: AllowedDashboard[] = session.allowedDashboards ?? [];
   const [expandedWorkloadIds, setExpandedWorkloadIds] = useState<string[]>([]);
   const [workloadActionError, setWorkloadActionError] = useState('');
   const [loadingWorkloadId, setLoadingWorkloadId] = useState('');
@@ -41,12 +43,15 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
     [MINI_MIXER_APPLICATION_NAME]: getMiniMixerLaunchTarget,
   };
 
-  const workloadNames = workloads.flatMap((workload: AllowedWorkload) => [
-    workload.name,
-    ...(workload.child_workloads ?? []).map(
-      (childWorkload: ChildWorkload) => childWorkload.name,
-    ),
-  ]);
+  const workloadNames = [
+    ...workloads.flatMap((workload: AllowedWorkload) => [
+      workload.name,
+      ...(workload.child_workloads ?? []).map(
+        (childWorkload: ChildWorkload) => childWorkload.name,
+      ),
+    ]),
+    ...dashboards.map((dashboard) => dashboard.name),
+  ];
 
   const longestNameLength = Math.max(
     12,
@@ -182,6 +187,28 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
     }
   }
 
+  /*-------------------------------------------------------------*/
+  //  renderDashboardButtons()
+  /*-------------------------------------------------------------*/
+  function renderDashboardButtons(workloadId: string) {
+    return dashboards
+      .filter((dashboard) => dashboard.associatedWorkloadId === workloadId)
+      .map((dashboard) => (
+        <button
+          key={dashboard.id}
+          type="button"
+          className="workload-button child-workload-button"
+          style={{ width: buttonWidth, cursor: 'default', opacity: 1 }}
+          data-dashboard-id={dashboard.id}
+          data-associated-workload-id={dashboard.associatedWorkloadId}
+          data-page-type={dashboard.pageType}
+          disabled
+        >
+          {dashboard.name}
+        </button>
+      ));
+  }
+
   return (
     <section className="user-home-page">
       <header className="user-home-header">
@@ -238,28 +265,33 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
                       : workload.name}
                   </button>
 
+                  {renderDashboardButtons(workload.id)}
+
                   {workload.is_parent === 1 && isExpanded && (
                     <div className="child-workload-button-list">
                       {childWorkloads.length ? (
                         childWorkloads.map(
                           (childWorkload: ChildWorkload) => (
-                            <button
-                              key={childWorkload.id}
-                              type="button"
-                              className="workload-button child-workload-button"
-                              style={{ width: buttonWidth }}
-                              data-application-name={
-                                childWorkload.applicationName
-                              }
-                              //onClick={() => handleChildWorkloadClick(childWorkload)}
-                              onClick={() =>
-                                handleChildWorkloadClick(
-                                  childWorkload,
-                                )
-                              }
-                            >
-                              {childWorkload.name}
-                            </button>
+                            <Fragment key={childWorkload.id}>
+                              <button
+                                type="button"
+                                className="workload-button child-workload-button"
+                                style={{ width: buttonWidth }}
+                                data-application-name={
+                                  childWorkload.applicationName
+                                }
+                                //onClick={() => handleChildWorkloadClick(childWorkload)}
+                                onClick={() =>
+                                  handleChildWorkloadClick(
+                                    childWorkload,
+                                  )
+                                }
+                              >
+                                {childWorkload.name}
+                              </button>
+
+                              {renderDashboardButtons(childWorkload.id)}
+                            </Fragment>
                           ),
                         )
                       ) : (

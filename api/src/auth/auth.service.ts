@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 
 import { AmppControlService } from '../ampp/services/ampp-control.service';
+import type { AllowedDashboard } from '../ampp/types/dashboard_types';
 import type {
   AllowedWorkload,
   AmppChildWorkloadsResponse,
@@ -24,6 +25,8 @@ export type LoginResult = {
   fabricId: string;
   nodeId: string;
   allowedWorkloads: AllowedWorkload[];
+  allowedDashboardIds: string[];
+  allowedDashboards: AllowedDashboard[];
   amppAllowedWorkloadIds: string[];
 };
 
@@ -59,7 +62,10 @@ export class AuthService {
 
 
     /* Get user's assigned workloads from the DB */
-    const userDBWorkloads = await this.getUserDBWorkloads(user.id);
+    const [userDBWorkloads, allowedDashboards] = await Promise.all([
+      this.getUserDBWorkloads(user.id),
+      this.userCredentials.getUserDashboards(user.id),
+    ]);
     const parentDBWorkloads = userDBWorkloads.filter(
       (workload) => workload.is_parent === 1,
     );
@@ -143,6 +149,8 @@ export class AuthService {
       fabricId: firstWorkload?.fabricId ?? '',
       nodeId: firstWorkload?.nodeId ?? '',
       allowedWorkloads,
+      allowedDashboardIds: allowedDashboards.map((dashboard) => dashboard.id),
+      allowedDashboards,
       amppAllowedWorkloadIds,
     };
   }

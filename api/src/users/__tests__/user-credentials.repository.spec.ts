@@ -99,4 +99,40 @@ describe('UserCredentialsRepository', () => {
 
     expect(execute).toHaveBeenCalledWith(expect.any(String), ['mock-user-001']);
   });
+
+  it('returns assigned dashboards for the user', async () => {
+    execute.mockResolvedValueOnce([
+      [
+        {
+          dashboard_id: 'dashboard-001',
+          associated_workload_id: 'workload-001',
+          name: 'Operations Dashboard',
+          page_type: 'ampp-ui',
+        },
+      ],
+    ]);
+
+    const config = {
+      get: jest.fn((key: string) => {
+        if (key === 'MYSQL_PORT') {
+          return '3306';
+        }
+
+        return undefined;
+      }),
+    } as unknown as ConfigService;
+
+    const repository = new UserCredentialsRepository(config);
+
+    await expect(repository.getUserDashboards('mock-user-001')).resolves.toEqual([
+      {
+        id: 'dashboard-001',
+        associatedWorkloadId: 'workload-001',
+        name: 'Operations Dashboard',
+        pageType: 'ampp-ui',
+      },
+    ]);
+
+    expect(execute).toHaveBeenCalledWith(expect.any(String), ['mock-user-001']);
+  });
 });

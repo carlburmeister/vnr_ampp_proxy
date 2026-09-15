@@ -14,6 +14,7 @@ export class AmppSessionController {
       fabricId: req.session.fabricId,
       nodeId: req.session.nodeId,
       allowedWorkloads: req.session.allowedWorkloads ?? [],
+      allowedDashboards: req.session.allowedDashboards ?? [],
     };
   }
 }

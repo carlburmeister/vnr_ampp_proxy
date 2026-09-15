@@ -14,6 +14,7 @@ describe('AuthService', () => {
   let getWorkload: jest.Mock;
   let listChildWorkloads: jest.Mock;
   let getUserDBWorkloads: jest.Mock;
+  let getUserDashboards: jest.Mock;
 
   beforeEach(() => {
     getUserDBWorkloads = jest.fn(async () => [
@@ -37,6 +38,15 @@ describe('AuthService', () => {
       },
     ]);
 
+    getUserDashboards = jest.fn(async () => [
+      {
+        id: 'dashboard-001',
+        associatedWorkloadId: 'direct-workload-001',
+        name: 'Operations Dashboard',
+        pageType: 'ampp-ui',
+      },
+    ]);
+
     const userCredentials = {
       findByUsername: jest.fn(async (username: string) => {
         if (username !== 'admin') {
@@ -51,6 +61,7 @@ describe('AuthService', () => {
         };
       }),
       getUserDBWorkloads,
+      getUserDashboards,
     } as unknown as UserCredentialsRepository;
 
     getWorkload = jest.fn(async (workloadId: string) => {
@@ -177,6 +188,15 @@ describe('AuthService', () => {
           nodeId: 'mock-node-001',
         },
       ],
+      allowedDashboardIds: ['dashboard-001'],
+      allowedDashboards: [
+        {
+          id: 'dashboard-001',
+          associatedWorkloadId: 'direct-workload-001',
+          name: 'Operations Dashboard',
+          pageType: 'ampp-ui',
+        },
+      ],
     });
 
     expect(result.amppAllowedWorkloadIds).toEqual(
@@ -190,6 +210,7 @@ describe('AuthService', () => {
     );
 
     expect(getUserDBWorkloads).toHaveBeenCalledWith('mock-user-001');
+    expect(getUserDashboards).toHaveBeenCalledWith('mock-user-001');
     expect(listChildWorkloads).toHaveBeenCalledWith('parent-workload-001');
     expect(getWorkload).toHaveBeenCalledTimes(2);
     expect(getWorkload).not.toHaveBeenCalledWith('direct-workload-001');
@@ -203,6 +224,7 @@ describe('AuthService', () => {
     );
 
     expect(getUserDBWorkloads).not.toHaveBeenCalled();
+    expect(getUserDashboards).not.toHaveBeenCalled();
     expect(listChildWorkloads).not.toHaveBeenCalled();
   });
 });

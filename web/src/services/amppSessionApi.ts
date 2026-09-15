@@ -25,12 +25,20 @@ export type AllowedWorkload = {
   child_workloads?: ChildWorkload[];
 };
 
+export type AllowedDashboard = {
+  id: string;
+  associatedWorkloadId: string;
+  name: string;
+  pageType: WorkloadPageType;
+};
+
 export type SessionData = {
   user: AuthenticatedUser;
   parentWorkloadId?: string;
   fabricId?: string;
   nodeId?: string;
   allowedWorkloads: AllowedWorkload[];
+  allowedDashboards: AllowedDashboard[];
 };
 
 export async function getCurrentSession(): Promise<SessionData | null> {

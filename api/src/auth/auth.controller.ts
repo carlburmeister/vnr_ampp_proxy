@@ -46,6 +46,8 @@ export class AuthController {
     req.session.fabricId = result.fabricId;
     req.session.nodeId = result.nodeId;
     req.session.allowedWorkloads = result.allowedWorkloads;
+    req.session.allowedDashboardIds = result.allowedDashboardIds;
+    req.session.allowedDashboards = result.allowedDashboards;
     req.session.amppAllowedWorkloadIds = result.amppAllowedWorkloadIds;
 
     await new Promise<void>((resolve, reject) => {
