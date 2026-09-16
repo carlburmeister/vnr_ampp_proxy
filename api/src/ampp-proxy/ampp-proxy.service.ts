@@ -19,6 +19,7 @@ import {
   AmppResponseRewriterService,
   type AmppBrowserResponse,
 } from './ampp-response-rewriter.service';
+import { AmppDashboardFilterService } from './ampp-dashboard-filter.service';
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
@@ -32,6 +33,7 @@ export class AmppProxyService {
     private readonly bearerToken: AmppBearerTokenService,
     private readonly browserSecurity: AmppBrowserSecurityService,
     private readonly http: AmppCookieHttpService,
+    private readonly dashboardFilter: AmppDashboardFilterService,
     private readonly matrixFilter: AmppMatrixFilterService,
     private readonly responseRewriter: AmppResponseRewriterService,
     private readonly sessionBroker: AmppSessionBrokerService,
@@ -171,6 +173,13 @@ export class AmppProxyService {
 
     response = this.matrixFilter.filterApiResponse(
       session,
+      workloadId,
+      upstreamPath,
+      response,
+    );
+    response = this.dashboardFilter.filterApiResponse(
+      session,
+      workloadId,
       upstreamPath,
       response,
     );

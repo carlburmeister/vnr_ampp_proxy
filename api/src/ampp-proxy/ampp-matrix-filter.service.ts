@@ -57,6 +57,7 @@ export class AmppMatrixFilterService {
 
   filterApiResponse(
     session: SessionData,
+    workloadId: string,
     upstreamPath: string,
     response: AmppCookieHttpResponse,
   ): AmppCookieHttpResponse {
@@ -65,7 +66,13 @@ export class AmppMatrixFilterService {
     const responseKey = MATRIX_RESPONSE_KEYS[pathname];
 
     if (responseKey) {
-      return this.filterMatrixResponse(session, target, response, responseKey);
+      return this.filterMatrixResponse(
+        session,
+        workloadId,
+        target,
+        response,
+        responseKey,
+      );
     }
 
     if (MATRIX_PRODUCER_PATH.test(target.pathname)) {
@@ -117,6 +124,7 @@ export class AmppMatrixFilterService {
 
   private filterMatrixResponse(
     session: SessionData,
+    workloadId: string,
     target: URL,
     response: AmppCookieHttpResponse,
     responseKey: string,
@@ -126,10 +134,6 @@ export class AmppMatrixFilterService {
     }
 
     const fabricId = target.searchParams.get('fabricId')?.toLowerCase();
-
-    if (!fabricId) {
-      throw new BadGatewayException('AMPP Matrix response is missing fabricId');
-    }
 
     let parsed: Record<string, unknown>;
 
@@ -150,25 +154,67 @@ export class AmppMatrixFilterService {
       );
     }
 
+    if (!fabricId) {
+      return this.filterUnscopedMatrixResponse(
+        session,
+        workloadId,
+        response,
+        parsed,
+        items,
+        responseKey,
+      );
+    }
+
     const allowedWorkloadIds = this.getAllowedWorkloadIds(session);
     const fabricAccess = this.getFabricAccess(session, fabricId);
     let filteredItems: unknown[];
 
     if (responseKey === 'producers') {
+      const baseItems: unknown[] = [];
+
       filteredItems = items.flatMap((item) => {
         const wrapper = this.asObject(item);
         const producer = this.asObject(wrapper?.producer);
 
-        if (!producer || !this.isAllowedEntity(producer, allowedWorkloadIds)) {
+        if (!producer) {
           return [];
+        }
+
+        const baseAllowed = this.isAllowedEntity(
+          producer,
+          allowedWorkloadIds,
+        );
+        const dashboardAllowed = this.isDashboardEntityAllowed(
+          session,
+          workloadId,
+          producer,
+          'producer',
+        );
+
+        if (!baseAllowed && !dashboardAllowed) {
+          return [];
+        }
+
+        if (baseAllowed) {
+          baseItems.push(item);
+        }
+
+        if (dashboardAllowed) {
+          this.addDashboardEntityId(session, workloadId, 'producerIds', producer);
         }
 
         const routedConsumers = Array.isArray(producer.routedConsumers)
           ? producer.routedConsumers.filter((consumer) => {
               const routedConsumer = this.asObject(consumer);
-              return (
-                !!routedConsumer &&
-                this.isAllowedEntity(routedConsumer, allowedWorkloadIds)
+              return Boolean(
+                routedConsumer &&
+                  (this.isAllowedEntity(routedConsumer, allowedWorkloadIds) ||
+                    this.isDashboardEntityAllowed(
+                      session,
+                      workloadId,
+                      routedConsumer,
+                      'consumer',
+                    )),
               );
             })
           : [];
@@ -189,33 +235,71 @@ export class AmppMatrixFilterService {
 
         return [{ ...wrapper, producer: filteredProducer }];
       });
-      fabricAccess.producerIds = this.getWrappedIds(filteredItems, 'producer');
-      fabricAccess.producerNames = this.getWrappedNames(
-        filteredItems,
-        'producer',
-      );
+      fabricAccess.producerIds = this.getWrappedIds(baseItems, 'producer');
+      fabricAccess.producerNames = this.getWrappedNames(baseItems, 'producer');
     } else if (responseKey === 'consumers') {
-      const producerIds = this.getIdSet(fabricAccess.producerIds);
+      const baseItems: unknown[] = [];
+      const producerIds = this.getVisibleIds(
+        session,
+        workloadId,
+        'producerIds',
+        fabricAccess.producerIds,
+      );
 
       filteredItems = items.flatMap((item) => {
         const wrapper = this.asObject(item);
         const consumer = this.asObject(wrapper?.consumer);
 
-        if (!consumer || !this.isAllowedEntity(consumer, allowedWorkloadIds)) {
+        if (!consumer) {
           return [];
+        }
+
+        const baseAllowed = this.isAllowedEntity(
+          consumer,
+          allowedWorkloadIds,
+        );
+        const dashboardAllowed = this.isDashboardEntityAllowed(
+          session,
+          workloadId,
+          consumer,
+          'consumer',
+        );
+
+        if (!baseAllowed && !dashboardAllowed) {
+          return [];
+        }
+
+        if (baseAllowed) {
+          baseItems.push(item);
+        }
+
+        if (dashboardAllowed) {
+          this.addDashboardEntityId(session, workloadId, 'consumerIds', consumer);
         }
 
         return [
           {
             ...wrapper,
-            consumer: this.filterConsumerRelations(consumer, producerIds).value,
+            consumer: dashboardAllowed
+              ? consumer
+              : this.filterConsumerRelations(consumer, producerIds).value,
           },
         ];
       });
-      fabricAccess.consumerIds = this.getWrappedIds(filteredItems, 'consumer');
+      fabricAccess.consumerIds = this.getWrappedIds(baseItems, 'consumer');
     } else if (responseKey === 'sources') {
-      const producerIds = this.getIdSet(fabricAccess.producerIds);
-      const consumerIds = this.getIdSet(fabricAccess.consumerIds);
+      const producerIds = this.getVisibleIds(
+        session,
+        workloadId,
+        'producerIds',
+        fabricAccess.producerIds,
+      );
+      const consumerIds = this.getVisibleIds(
+        session,
+        workloadId,
+        'consumerIds',
+        fabricAccess.consumerIds,
+      );
 
       filteredItems = items.flatMap((item) => {
         const source = this.asObject(item);
@@ -245,8 +329,172 @@ export class AmppMatrixFilterService {
         ];
       });
     } else {
-      const producerIds = this.getIdSet(fabricAccess.producerIds);
-      const consumerIds = this.getIdSet(fabricAccess.consumerIds);
+      const producerIds = this.getVisibleIds(
+        session,
+        workloadId,
+        'producerIds',
+        fabricAccess.producerIds,
+      );
+      const consumerIds = this.getVisibleIds(
+        session,
+        workloadId,
+        'consumerIds',
+        fabricAccess.consumerIds,
+      );
+
+      filteredItems = items.flatMap((item) => {
+        const destination = this.asObject(item);
+        const id = destination?.id;
+
+        if (
+          !destination ||
+          typeof id !== 'string' ||
+          !consumerIds.has(id.toLowerCase())
+        ) {
+          return [];
+        }
+
+        return [
+          {
+            ...destination,
+            ...(typeof destination.sourceId === 'string' &&
+            !producerIds.has(destination.sourceId.toLowerCase())
+              ? { sourceId: null }
+              : {}),
+          },
+        ];
+      });
+    }
+
+    return this.replaceJsonBody(response, {
+      ...parsed,
+      [responseKey]: filteredItems,
+    });
+  }
+
+  private filterUnscopedMatrixResponse(
+    session: SessionData,
+    workloadId: string,
+    response: AmppCookieHttpResponse,
+    parsed: Record<string, unknown>,
+    items: unknown[],
+    responseKey: string,
+  ): AmppCookieHttpResponse {
+    const allowedWorkloadIds = this.getAllowedWorkloadIds(session);
+    const allowedFabricIds = this.getAllowedFabricIds(session);
+    let filteredItems: unknown[];
+
+    if (responseKey === 'producers' || responseKey === 'consumers') {
+      const entityKey = responseKey === 'producers' ? 'producer' : 'consumer';
+      const dashboardIdKey =
+        entityKey === 'producer' ? 'producerIds' : 'consumerIds';
+
+      filteredItems = items.filter((item) => {
+        const entity = this.asObject(this.asObject(item)?.[entityKey]);
+
+        if (!entity) {
+          return false;
+        }
+
+        const baseAllowed = this.isAllowedEntity(
+          entity,
+          allowedWorkloadIds,
+          allowedFabricIds,
+        );
+        const dashboardAllowed = this.isDashboardEntityAllowed(
+          session,
+          workloadId,
+          entity,
+          entityKey,
+        );
+
+        if (dashboardAllowed) {
+          this.addDashboardEntityId(
+            session,
+            workloadId,
+            dashboardIdKey,
+            entity,
+          );
+        }
+
+        return baseAllowed || dashboardAllowed;
+      });
+
+      for (const item of filteredItems) {
+        const entity = this.asObject(this.asObject(item)?.[entityKey]);
+        const fabricId = entity?.fabricId;
+        const id = entity?.id;
+
+        if (
+          !entity ||
+          typeof fabricId !== 'string' ||
+          typeof id !== 'string' ||
+          !this.isAllowedEntity(entity, allowedWorkloadIds, allowedFabricIds)
+        ) {
+          continue;
+        }
+
+        const access = this.getFabricAccess(session, fabricId);
+
+        if (entityKey === 'producer') {
+          this.addId((access.producerIds ??= []), id);
+          if (typeof entity.name === 'string') {
+            (access.producerNames ??= {})[id.toLowerCase()] = entity.name;
+          }
+        } else {
+          this.addId((access.consumerIds ??= []), id);
+        }
+      }
+    } else if (responseKey === 'sources') {
+      const producerIds = this.getVisibleCachedIds(
+        session,
+        workloadId,
+        'producerIds',
+      );
+      const consumerIds = this.getVisibleCachedIds(
+        session,
+        workloadId,
+        'consumerIds',
+      );
+
+      filteredItems = items.flatMap((item) => {
+        const source = this.asObject(item);
+        const id = source?.id;
+
+        if (
+          !source ||
+          typeof id !== 'string' ||
+          !producerIds.has(id.toLowerCase())
+        ) {
+          return [];
+        }
+
+        return [
+          {
+            ...source,
+            ...(Array.isArray(source.destinationIds)
+              ? {
+                  destinationIds: source.destinationIds.filter(
+                    (destinationId) =>
+                      typeof destinationId === 'string' &&
+                      consumerIds.has(destinationId.toLowerCase()),
+                  ),
+                }
+              : {}),
+          },
+        ];
+      });
+    } else {
+      const producerIds = this.getVisibleCachedIds(
+        session,
+        workloadId,
+        'producerIds',
+      );
+      const consumerIds = this.getVisibleCachedIds(
+        session,
+        workloadId,
+        'consumerIds',
+      );
 
       filteredItems = items.flatMap((item) => {
         const destination = this.asObject(item);
@@ -660,6 +908,103 @@ export class AmppMatrixFilterService {
         (typeof fabricId === 'string' &&
           allowedFabricIds.has(fabricId.toLowerCase())))
     );
+  }
+
+  private isDashboardEntityAllowed(
+    session: SessionData,
+    workloadId: string,
+    entity: Record<string, unknown>,
+    entityKey: 'producer' | 'consumer',
+  ): boolean {
+    const scope =
+      session.amppDashboardMatrixAccess?.[workloadId.toLowerCase()];
+    const fabricId = entity.fabricId;
+
+    if (!scope || typeof fabricId !== 'string') {
+      return false;
+    }
+
+    const normalizedFabricId = fabricId.toLowerCase();
+    const entityWorkloadId = entity.workloadId;
+    const name = entity.name;
+
+    return Object.values(scope.dashboards ?? {}).some((dashboard) => {
+      const references = dashboard[normalizedFabricId];
+
+      if (!references) {
+        return false;
+      }
+
+      if (
+        typeof entityWorkloadId === 'string' &&
+        (references.workloadIds ?? []).some(
+          (id) => id.toLowerCase() === entityWorkloadId.toLowerCase(),
+        )
+      ) {
+        return true;
+      }
+
+      if (typeof name !== 'string') {
+        return false;
+      }
+
+      const names =
+        entityKey === 'producer'
+          ? references.producerNames
+          : references.consumerNames;
+
+      return (names ?? []).includes(name);
+    });
+  }
+
+  private addDashboardEntityId(
+    session: SessionData,
+    workloadId: string,
+    key: 'producerIds' | 'consumerIds',
+    entity: Record<string, unknown>,
+  ): void {
+    const id = entity.id;
+    const scope =
+      session.amppDashboardMatrixAccess?.[workloadId.toLowerCase()];
+
+    if (typeof id !== 'string' || !scope) {
+      return;
+    }
+
+    this.addId((scope[key] ??= []), id);
+  }
+
+  private getVisibleIds(
+    session: SessionData,
+    workloadId: string,
+    key: 'producerIds' | 'consumerIds',
+    baseIds: string[] | undefined,
+  ): Set<string> {
+    return new Set([
+      ...(baseIds ?? []).map((id) => id.toLowerCase()),
+      ...this.getDashboardIds(session, workloadId, key),
+    ]);
+  }
+
+  private getVisibleCachedIds(
+    session: SessionData,
+    workloadId: string,
+    key: 'producerIds' | 'consumerIds',
+  ): Set<string> {
+    return new Set([
+      ...this.getCachedIds(session, key),
+      ...this.getDashboardIds(session, workloadId, key),
+    ]);
+  }
+
+  private getDashboardIds(
+    session: SessionData,
+    workloadId: string,
+    key: 'producerIds' | 'consumerIds',
+  ): string[] {
+    return (
+      session.amppDashboardMatrixAccess?.[workloadId.toLowerCase()]?.[key] ?? []
+    ).map((id) => id.toLowerCase());
   }
 
   private getAllowedWorkloadIds(session: SessionData): Set<string> {

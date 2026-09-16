@@ -89,6 +89,21 @@ export class AmppProxyPolicyService {
       );
     }
 
+    const dashboardId = this.getDashboardId(target.pathname);
+
+    if (dashboardId) {
+      this.assertDashboardAllowed(session, workloadId, dashboardId);
+    }
+
+    const targetWorkloadId = this.getUiTargetWorkloadId(target);
+
+    if (targetWorkloadId) {
+      this.assertWorkloadAllowed(
+        session.allowedWorkloads ?? [],
+        targetWorkloadId,
+      );
+    }
+
     return `${target.pathname}${target.search}`;
   }
 
@@ -117,6 +132,7 @@ export class AmppProxyPolicyService {
         normalizedMethod,
         target,
         session,
+        workloadId,
         allowedWorkloads,
         allowedWorkloadIds,
         body,
@@ -152,6 +168,7 @@ export class AmppProxyPolicyService {
     method: string,
     target: URL,
     session: SessionData,
+    workloadId: string,
     allowedWorkloads: AllowedWorkload[],
     allowedWorkloadIds: Set<string>,
     body: Buffer | undefined,
@@ -162,6 +179,19 @@ export class AmppProxyPolicyService {
       return true;
     }
 
+    if (
+      this.isAllowedDashboardRequest(
+        method,
+        target,
+        session,
+        workloadId,
+        allowedWorkloadIds,
+        body,
+      )
+    ) {
+      return true;
+    }
+
     if (pathname.startsWith('/cluster/matrix/api/')) {
       return this.isAllowedMatrixRequest(
         method,
@@ -169,6 +199,7 @@ export class AmppProxyPolicyService {
         session,
         allowedWorkloads,
         body,
+        this.hasDashboardScope(session, workloadId),
       );
     }
 
@@ -190,8 +221,10 @@ export class AmppProxyPolicyService {
         method,
         target,
         session,
+        workloadId,
         allowedWorkloadIds,
         body,
+        this.hasDashboardScope(session, workloadId),
       );
     }
 
@@ -290,17 +323,27 @@ export class AmppProxyPolicyService {
     session: SessionData,
     allowedWorkloads: AllowedWorkload[],
     body: Buffer | undefined,
+    dashboardScope: boolean,
   ): boolean {
     const pathname = target.pathname.replace(/\/+$/, '').toLowerCase();
 
     if (method === 'GET' && MATRIX_READ_PATHS.has(pathname)) {
       const fabricIds = target.searchParams.getAll('fabricId');
 
-      return (
+      if (
         fabricIds.length === 1 &&
         this.getAllowedFabricIds(allowedWorkloads).has(
           fabricIds[0].toLowerCase(),
         )
+      ) {
+        return true;
+      }
+
+      return (
+        dashboardScope &&
+        fabricIds.length === 0 &&
+        target.searchParams.getAll('type').length === 1 &&
+        target.searchParams.get('type')?.toLowerCase() === 'ice'
       );
     }
 
@@ -320,10 +363,11 @@ export class AmppProxyPolicyService {
   private isApiPath(pathname: string): boolean {
     return (
       /^\/(?:api|graphql)(?:\/|$)/i.test(pathname) ||
-      /^\/(?:discovery|configuration|identity|notifications|logging)\/api(?:\/|$)/i.test(
+      /^\/(?:discovery|configuration|identity|notifications|logging|hubmanager)\/api(?:\/|$)/i.test(
         pathname,
       ) ||
-      /^\/cluster\/(?:store|state|matrix|control)\/api(?:\/|$)/i.test(pathname) ||
+      /^\/ampp\/control\/api(?:\/|$)/i.test(pathname) ||
+      /^\/cluster\/(?:store|state|matrix|control|fabric|snapshot)\/api(?:\/|$)/i.test(pathname) ||
       /^\/mocha\/application\/[^/]+\/api(?:\/|$)/i.test(pathname)
     );
   }
@@ -332,8 +376,10 @@ export class AmppProxyPolicyService {
     method: string,
     target: URL,
     session: SessionData,
+    workloadId: string,
     allowedWorkloadIds: Set<string>,
     body: Buffer | undefined,
+    dashboardScope: boolean,
   ): boolean {
     const decodedPath = target.pathname
       .split('/')
@@ -345,7 +391,12 @@ export class AmppProxyPolicyService {
       !target.search &&
       /^\/notifications\/api\/v1\/mailbox\/?$/i.test(decodedPath)
     ) {
-      return this.isAllowedMailboxCreate(body, allowedWorkloadIds);
+      return this.isAllowedMailboxCreate(
+        body,
+        allowedWorkloadIds,
+        dashboardScope,
+        workloadId,
+      );
     }
 
     if (
@@ -388,6 +439,8 @@ export class AmppProxyPolicyService {
           subscriptionMatch[3],
           allowedWorkloadIds,
           this.getAllowedFabricIds(session.allowedWorkloads ?? []),
+          this.getAllowedNodeIds(session.allowedWorkloads ?? []),
+          dashboardScope,
         ),
     );
   }
@@ -396,11 +449,41 @@ export class AmppProxyPolicyService {
     topic: string,
     allowedWorkloadIds: Set<string>,
     allowedFabricIds: Set<string>,
+    allowedNodeIds: Set<string>,
+    dashboardScope: boolean,
   ): boolean {
     const normalizedTopic = topic.toLowerCase();
 
     if (GLOBAL_NOTIFICATION_TOPICS.has(normalizedTopic)) {
       return true;
+    }
+
+    if (
+      dashboardScope &&
+      [
+        'gv.platform.configuration',
+        'gv.cluster.workload.created',
+        'gv.cluster.workload.*.deleted',
+        'gv.cluster.workload.#',
+        'gv.cluster.fabric.#',
+        'gv.cluster.fabric.node.assigned',
+        'gv.cluster.fabric.node.unassigned',
+        'gv.cluster.matrix.salvo.*.*',
+        'gv.cluster.matrix.*.#',
+        'gv.cluster.node.*.created',
+        'gv.cluster.node.*.deleted',
+        'gv.config.gv.node.*.config',
+      ].includes(normalizedTopic)
+    ) {
+      return true;
+    }
+
+    const nodeTopic = topic.match(
+      /^gv\.(?:cluster\.(?:node|nodestate)|config\.gv\.node)\.([0-9a-f-]{36})\.#$/i,
+    );
+
+    if (nodeTopic) {
+      return dashboardScope && allowedNodeIds.has(nodeTopic[1].toLowerCase());
     }
 
     const workloadPatterns = [
@@ -441,15 +524,27 @@ export class AmppProxyPolicyService {
   private isAllowedMailboxCreate(
     body: Buffer | undefined,
     allowedWorkloadIds: Set<string>,
+    dashboardScope: boolean,
+    workloadId: string,
   ): boolean {
     const parsed = this.parseJsonObject(body);
     const id = parsed?.id;
+    const proxiedDashboardMailbox =
+      typeof id === 'string'
+        ? id.match(
+            /^ts-api\.ampp-proxy\.ui\.([0-9a-f-]{36})\.cluster\.systemdashboard--[0-9a-f-]{36}$/i,
+          )
+        : undefined;
 
     return Boolean(
       parsed &&
         Object.keys(parsed).length === 5 &&
         typeof id === 'string' &&
-        this.isAllowedMailboxId(id, allowedWorkloadIds) &&
+        (this.isAllowedMailboxId(id, allowedWorkloadIds) ||
+          (dashboardScope &&
+            (/^ts-cluster\.systemdashboard--[0-9a-f-]{36}$/i.test(id) ||
+              proxiedDashboardMailbox?.[1].toLowerCase() ===
+                workloadId.toLowerCase()))) &&
         parsed.durable === false &&
         parsed.mailboxTTL === 1500000 &&
         parsed.maximumLength === 10000 &&
@@ -916,8 +1011,9 @@ export class AmppProxyPolicyService {
 
       for (const [name, child] of Object.entries(value)) {
         if (
-          /^workload_?id$/i.test(name) &&
+          /^(?:workload|workload_?id)$/i.test(name) &&
           typeof child === 'string' &&
+          /^[0-9a-f-]{36}$/i.test(child) &&
           !allowedIds.has(child.toLowerCase())
         ) {
           throw new ForbiddenException(
@@ -999,6 +1095,190 @@ export class AmppProxyPolicyService {
         ])
         .filter((fabricId): fabricId is string => Boolean(fabricId))
         .map((fabricId) => fabricId.toLowerCase()),
+    );
+  }
+
+  private isAllowedDashboardRequest(
+    method: string,
+    target: URL,
+    session: SessionData,
+    workloadId: string,
+    allowedWorkloadIds: Set<string>,
+    body: Buffer | undefined,
+  ): boolean {
+    if (!this.hasDashboardScope(session, workloadId)) {
+      return false;
+    }
+
+    const pathname = target.pathname.replace(/\/+$/, '').toLowerCase();
+    const dashboardConfig = pathname.match(
+      /^\/configuration\/api\/v1\/configuration\/gv\/systemdashboards\/(?:dashboards|dashboard-edits)\/([^/]+)$/i,
+    );
+
+    if (dashboardConfig) {
+      return (
+        method === 'GET' &&
+        !target.search &&
+        this.isDashboardAllowed(session, workloadId, dashboardConfig[1])
+      );
+    }
+
+    if (method === 'GET') {
+      if (
+        [
+          '/configuration/api/v1/configurations/startswith/gv/matrix/panel',
+          '/configuration/api/v1/configurations/startswith/gv/amppcontrolpanels/panels',
+          '/configuration/api/v1/configurations/startswith/gv/systemdashboards/dashboard-categories',
+          '/configuration/api/v1/configurations/startswith/gv/systemdashboards/dashboard-list',
+          '/ampp/control/api/v1/macro',
+          '/ampp/control/api/v1/control/application/references',
+          '/cluster/state/api/v1/workloads',
+          '/cluster/state/api/v2/nodes',
+          '/cluster/snapshot/api/v1/snapshots',
+        ].includes(pathname)
+      ) {
+        return !target.search;
+      }
+
+      if (pathname === '/cluster/fabric/api/v1/fabrics') {
+        return (
+          target.searchParams.getAll('includeNodes').length === 1 &&
+          target.searchParams.get('includeNodes') === 'true' &&
+          [...target.searchParams.keys()].every((name) => name === 'includeNodes')
+        );
+      }
+
+      if (pathname === '/hubmanager/api/v1/sites') {
+        return (
+          target.searchParams.get('includeNodes') === 'true' &&
+          target.searchParams.get('includeHistory') === 'false' &&
+          [...target.searchParams.keys()].every((name) =>
+            ['includeNodes', 'includeHistory'].includes(name),
+          )
+        );
+      }
+
+      if (pathname === '/cluster/matrix/api/v1/salvos') {
+        return (
+          target.searchParams.get('includeMappings') === 'false' &&
+          [...target.searchParams.keys()].every((name) => name === 'includeMappings')
+        );
+      }
+    }
+
+    return (
+      method === 'POST' &&
+      !target.search &&
+      pathname === '/ampp/control/api/v1/control/commit' &&
+      this.isAllowedDashboardControlCommit(
+        session,
+        workloadId,
+        allowedWorkloadIds,
+        body,
+      )
+    );
+  }
+
+  private isAllowedDashboardControlCommit(
+    session: SessionData,
+    workloadId: string,
+    allowedWorkloadIds: Set<string>,
+    body: Buffer | undefined,
+  ): boolean {
+    const parsed = this.parseJsonObject(body);
+    const targetWorkload = parsed?.workload;
+    const reconKey = parsed?.reconKey;
+
+    if (
+      typeof targetWorkload !== 'string' ||
+      !allowedWorkloadIds.has(targetWorkload.toLowerCase()) ||
+      typeof reconKey !== 'string'
+    ) {
+      return false;
+    }
+
+    const dashboardId = reconKey.match(
+      /^dashboard-([0-9a-f-]{36})-/i,
+    )?.[1];
+
+    return Boolean(
+      dashboardId && this.isDashboardAllowed(session, workloadId, dashboardId),
+    );
+  }
+
+  private getDashboardId(pathname: string): string | undefined {
+    return pathname.match(
+      /^\/cluster\/systemdashboard\/dashboard\/([^/]+)\/?$/i,
+    )?.[1];
+  }
+
+  private hasDashboardScope(session: SessionData, workloadId: string): boolean {
+    const normalizedWorkloadId = workloadId.toLowerCase();
+    return (session.allowedDashboards ?? []).some(
+      (dashboard) =>
+        dashboard.associatedWorkloadId.toLowerCase() === normalizedWorkloadId,
+    );
+  }
+
+  private isDashboardAllowed(
+    session: SessionData,
+    workloadId: string,
+    dashboardId: string,
+  ): boolean {
+    const normalizedDashboardId = dashboardId.toLowerCase();
+    const normalizedWorkloadId = workloadId.toLowerCase();
+
+    return (
+      (session.allowedDashboardIds ?? []).some(
+        (id) => id.toLowerCase() === normalizedDashboardId,
+      ) &&
+      (session.allowedDashboards ?? []).some(
+        (dashboard) =>
+          dashboard.id.toLowerCase() === normalizedDashboardId &&
+          dashboard.associatedWorkloadId.toLowerCase() === normalizedWorkloadId,
+      )
+    );
+  }
+
+  private assertDashboardAllowed(
+    session: SessionData,
+    workloadId: string,
+    dashboardId: string,
+  ): void {
+    if (!this.isDashboardAllowed(session, workloadId, dashboardId)) {
+      throw new ForbiddenException('Dashboard is not allowed for this session');
+    }
+  }
+
+  private getUiTargetWorkloadId(target: URL): string | undefined {
+    const decodedPath = target.pathname
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .join('/');
+    const match =
+      decodedPath.match(
+        /^\/app\/wrapper\/single\/[^/]+\/([0-9a-f-]{36})(?:\/|$)/i,
+      ) ??
+      decodedPath.match(
+        /^\/mocha\/application\/([0-9a-f-]{36})(?:\/|$)/i,
+      );
+
+    return match?.[1];
+  }
+
+  private getAllowedNodeIds(
+    allowedWorkloads: AllowedWorkload[],
+  ): Set<string> {
+    return new Set(
+      allowedWorkloads
+        .flatMap((workload) => [
+          workload.nodeId,
+          ...(workload.child_workloads ?? []).map(
+            (childWorkload) => childWorkload.nodeId,
+          ),
+        ])
+        .filter((nodeId): nodeId is string => Boolean(nodeId))
+        .map((nodeId) => nodeId.toLowerCase()),
     );
   }
 

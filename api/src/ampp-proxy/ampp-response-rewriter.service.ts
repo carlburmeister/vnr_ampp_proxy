@@ -449,7 +449,7 @@ export class AmppResponseRewriterService {
       `/api/ampp-proxy/ui/${encodeURIComponent(workloadId)}`;
 
     return text.replace(
-      /(["'`])\/(identity|app|assets|static)(?=\/)/gi,
+      /(["'`])\/(identity|app|assets|static|ampp\/control|cluster\/systemdashboard)(?=\/)/gi,
       `$1${proxyBase}/$2`,
     );
   }
@@ -479,16 +479,17 @@ export class AmppResponseRewriterService {
 
     const publicUrl = new URL(publicOrigin);
     const uiProxyPath = `/api/ampp-proxy/ui/${encodeURIComponent(workloadId)}`;
-    const apiProxyPath = `/api/ampp-proxy/api/${encodeURIComponent(workloadId)}`;
     const wsProxyPath = `/api/ampp-proxy/ws/${encodeURIComponent(workloadId)}`;
 
     if (target.origin === publicUrl.origin) {
       if (target.pathname.startsWith(uiProxyPath)) {
         const upstreamPath =
           target.pathname.slice(uiProxyPath.length) || '/';
+        const targetWorkloadId =
+          this.getUiTargetWorkloadId(upstreamPath) ?? workloadId;
         const proxyPath = this.isApiPath(upstreamPath)
-          ? apiProxyPath
-          : uiProxyPath;
+          ? `/api/ampp-proxy/api/${encodeURIComponent(targetWorkloadId)}`
+          : `/api/ampp-proxy/ui/${encodeURIComponent(targetWorkloadId)}`;
 
         return (
           publicOrigin +
@@ -499,10 +500,7 @@ export class AmppResponseRewriterService {
         );
       }
 
-      if (
-        target.pathname.startsWith(apiProxyPath) ||
-        target.pathname.startsWith(wsProxyPath)
-      ) {
+      if (/^\/api\/ampp-proxy\/(?:ui|api|ws)\//i.test(target.pathname)) {
         return target.toString();
       }
     }
@@ -523,20 +521,55 @@ export class AmppResponseRewriterService {
       );
     }
 
+    const targetWorkloadId =
+      this.getUiTargetWorkloadId(target.pathname) ?? workloadId;
     const proxyPath = this.isApiPath(target.pathname)
-      ? apiProxyPath
-      : uiProxyPath;
+      ? `/api/ampp-proxy/api/${encodeURIComponent(targetWorkloadId)}`
+      : `/api/ampp-proxy/ui/${encodeURIComponent(targetWorkloadId)}`;
 
     return `${publicOrigin}${proxyPath}${path}`;
+  }
+
+  private getUiTargetWorkloadId(pathname: string): string | undefined {
+    const segments = pathname
+      .split('/')
+      .filter(Boolean)
+      .map((segment) => {
+        try {
+          return decodeURIComponent(segment);
+        } catch {
+          return segment;
+        }
+      });
+
+    if (
+      segments.length >= 5 &&
+      segments[0].toLowerCase() === 'app' &&
+      segments[1].toLowerCase() === 'wrapper' &&
+      segments[2].toLowerCase() === 'single'
+    ) {
+      return segments[4];
+    }
+
+    if (
+      segments.length >= 3 &&
+      segments[0].toLowerCase() === 'mocha' &&
+      segments[1].toLowerCase() === 'application'
+    ) {
+      return segments[2];
+    }
+
+    return undefined;
   }
 
   private isApiPath(pathname: string): boolean {
     return (
       /^\/(?:api|graphql)(?:\/|$)/i.test(pathname) ||
-      /^\/(?:discovery|configuration|identity|notifications|logging)\/api(?:\/|$)/i.test(
+      /^\/(?:discovery|configuration|identity|notifications|logging|hubmanager)\/api(?:\/|$)/i.test(
         pathname,
       ) ||
-      /^\/cluster\/(?:store|state|matrix|control)\/api(?:\/|$)/i.test(pathname) ||
+      /^\/ampp\/control\/api(?:\/|$)/i.test(pathname) ||
+      /^\/cluster\/(?:store|state|matrix|control|fabric|snapshot)\/api(?:\/|$)/i.test(pathname) ||
       /^\/mocha\/application\/[^/]+\/api(?:\/|$)/i.test(pathname)
     );
   }
@@ -588,12 +621,15 @@ const proxyHttpBase=window.location.origin+c.httpProxyPath;
 const proxyApiBase=window.location.origin+c.apiProxyPath;
 const proxyWsOrigin=window.location.origin.replace(/^http/i,'ws');
 const proxyWsBase=proxyWsOrigin+c.wsProxyPath;
-const amppRootPaths=['/app/','/identity/','/assets/','/static/','/mocha/'];
+const amppRootPaths=['/app/','/identity/','/assets/','/static/','/mocha/','/ampp/control/','/cluster/systemdashboard/'];
 const isAmppRootPath=function(path){return amppRootPaths.some(function(prefix){return path.startsWith(prefix);});};
-const isAmppApiPath=function(path){return /^\\/(?:api|graphql)(?:\\/|$)/i.test(path)||/^\\/(?:discovery|configuration|identity|notifications|logging)\\/api(?:\\/|$)/i.test(path)||/^\\/cluster\\/(?:store|state|matrix|control)\\/api(?:\\/|$)/i.test(path)||/^\\/mocha\\/application\\/[^/]+\\/api(?:\\/|$)/i.test(path);};
+const isAmppApiPath=function(path){return /^\\/(?:api|graphql)(?:\\/|$)/i.test(path)||/^\\/(?:discovery|configuration|identity|notifications|logging|hubmanager)\\/api(?:\\/|$)/i.test(path)||/^\\/ampp\\/control\\/api(?:\\/|$)/i.test(path)||/^\\/cluster\\/(?:store|state|matrix|control|fabric|snapshot)\\/api(?:\\/|$)/i.test(path)||/^\\/mocha\\/application\\/[^/]+\\/api(?:\\/|$)/i.test(path);};
+const getUiTargetWorkloadId=function(path){try{const segments=String(path).split('/').filter(Boolean).map(function(segment){try{return decodeURIComponent(segment);}catch{return segment;}});if(segments.length>=5&&segments[0].toLowerCase()==='app'&&segments[1].toLowerCase()==='wrapper'&&segments[2].toLowerCase()==='single')return segments[4];if(segments.length>=3&&segments[0].toLowerCase()==='mocha'&&segments[1].toLowerCase()==='application')return segments[2];}catch{}return undefined;};
+const proxyBaseForPath=function(path){const targetWorkloadId=getUiTargetWorkloadId(path);if(!targetWorkloadId)return isAmppApiPath(path)?proxyApiBase:proxyHttpBase;const route=isAmppApiPath(path)?'/api/ampp-proxy/api/':'/api/ampp-proxy/ui/';return window.location.origin+route+encodeURIComponent(targetWorkloadId);};
 const stripUiProxyPath=function(value){return String(value).split(c.httpProxyPath).join('');};
+
 const normalizeAuthorizeUrl=function(url){const path=url.pathname.startsWith(c.httpProxyPath)?url.pathname.slice(c.httpProxyPath.length)||'/':url.pathname;if(path.toLowerCase()!=='/identity/connect/authorize')return url;const redirectUri=url.searchParams.get('redirect_uri');if(redirectUri){try{const callback=new URL(redirectUri,c.upstreamHttpOrigin);const callbackPath=stripUiProxyPath(callback.pathname)||'/';url.searchParams.set('redirect_uri',new URL(callbackPath+callback.search+callback.hash,c.upstreamHttpOrigin).toString());}catch{}}const state=url.searchParams.get('state');if(state){try{const parsed=JSON.parse(state);if(parsed&&typeof parsed==='object'&&typeof parsed.to==='string'){parsed.to=stripUiProxyPath(parsed.to);url.searchParams.set('state',JSON.stringify(parsed));}}catch{}}return url;};
-const rewriteHttp=function(value){try{if(value===undefined||value===null)return value;const raw=String(value);const u=normalizeAuthorizeUrl(new URL(raw,c.upstreamHttpOrigin+c.upstreamDocumentPath));if(u.origin===window.location.origin){if(u.pathname.startsWith(c.httpProxyPath)){const upstreamPath=u.pathname.slice(c.httpProxyPath.length)||'/';const proxyBase=isAmppApiPath(upstreamPath)?proxyApiBase:proxyHttpBase;return proxyBase+upstreamPath+u.search+u.hash;}if(u.pathname.startsWith(c.apiProxyPath)||u.pathname.startsWith(c.wsProxyPath))return u.toString();if(isAmppApiPath(u.pathname))return proxyApiBase+u.pathname+u.search+u.hash;return isAmppRootPath(u.pathname)?proxyHttpBase+u.pathname+u.search+u.hash:raw;}if(u.origin!==c.upstreamHttpOrigin)return raw;const proxyBase=isAmppApiPath(u.pathname)?proxyApiBase:proxyHttpBase;return proxyBase+u.pathname+u.search+u.hash;}catch{return value;}};
+const rewriteHttp=function(value){try{if(value===undefined||value===null)return value;const raw=String(value);const u=normalizeAuthorizeUrl(new URL(raw,c.upstreamHttpOrigin+c.upstreamDocumentPath));if(u.origin===window.location.origin){if(u.pathname.startsWith(c.httpProxyPath)){const upstreamPath=u.pathname.slice(c.httpProxyPath.length)||'/';return proxyBaseForPath(upstreamPath)+upstreamPath+u.search+u.hash;}if(/^\\/api\\/ampp-proxy\\/(?:ui|api|ws)\\//i.test(u.pathname))return u.toString();if(isAmppApiPath(u.pathname))return proxyBaseForPath(u.pathname)+u.pathname+u.search+u.hash;return isAmppRootPath(u.pathname)?proxyBaseForPath(u.pathname)+u.pathname+u.search+u.hash:raw;}if(u.origin!==c.upstreamHttpOrigin)return raw;return proxyBaseForPath(u.pathname)+u.pathname+u.search+u.hash;}catch{return value;}};
 const rewriteWs=function(value){try{if(value===undefined||value===null)return value;const raw=String(value);const u=new URL(raw,c.upstreamWsOrigin+c.upstreamDocumentPath);if(u.host===window.location.host){if(u.pathname.startsWith(c.httpProxyPath)){const upstreamPath=u.pathname.slice(c.httpProxyPath.length)||'/';return proxyWsBase+upstreamPath+u.search+u.hash;}if(u.pathname.startsWith(c.wsProxyPath))return proxyWsOrigin+u.pathname+u.search+u.hash;return raw;}if(u.host!==new URL(c.upstreamWsOrigin).host)return raw;return proxyWsBase+u.pathname+u.search+u.hash;}catch{return value;}};
 const patchConfig=function(config){if(!config||typeof config!=='object')return config;const originalProxyPath=typeof config.proxyPath==='string'?config.proxyPath:'';const proxyPath=originalProxyPath.startsWith(c.httpProxyPath)?originalProxyPath:c.httpProxyPath+originalProxyPath;const configValues={baseUri:window.location.origin,proxyPath:proxyPath,platformUri:proxyHttpBase,clusterUri:proxyHttpBase};for(const key of Object.keys(configValues)){const value=configValues[key];try{const descriptor=Object.getOwnPropertyDescriptor(config,key);if(!descriptor||descriptor.configurable){Object.defineProperty(config,key,{configurable:true,enumerable:descriptor?descriptor.enumerable:true,get:function(){return value;},set:function(){}});}else{config[key]=value;}}catch{try{config[key]=value;}catch{}}}return config;};
 let gvConfig=patchConfig(window.__GVCONFIG__);try{Object.defineProperty(window,'__GVCONFIG__',{configurable:true,enumerable:true,get:function(){return gvConfig;},set:function(value){gvConfig=patchConfig(value);}});}catch{if(window.__GVCONFIG__)patchConfig(window.__GVCONFIG__);}

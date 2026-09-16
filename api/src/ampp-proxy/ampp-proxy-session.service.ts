@@ -2,13 +2,17 @@ import { Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import type { SessionData } from 'express-session';
 
-import type { AmppMatrixAccess } from '../auth/types/session-data';
+import type {
+  AmppDashboardMatrixAccess,
+  AmppMatrixAccess,
+} from '../auth/types/session-data';
 
 const SESSION_KEYS = [
   'amppUserId',
   'amppCookieJar',
   'amppAccessToken',
   'amppMatrixAccess',
+  'amppDashboardMatrixAccess',
   'amppNotificationMailboxIds',
 ] as const;
 
@@ -59,6 +63,15 @@ export class AmppProxySessionService {
               current.amppMatrixAccess,
               latest.amppMatrixAccess,
             );
+          }
+
+          if (changedKeys.includes('amppDashboardMatrixAccess')) {
+            req.session.amppDashboardMatrixAccess =
+              this.mergeDashboardMatrixAccess(
+                snapshot.values.amppDashboardMatrixAccess,
+                current.amppDashboardMatrixAccess,
+                latest.amppDashboardMatrixAccess,
+              );
           }
 
           if (changedKeys.includes('amppNotificationMailboxIds')) {
@@ -126,6 +139,76 @@ export class AmppProxySessionService {
           previous?.producerNames,
           current.producerNames,
         );
+      }
+    }
+
+    return merged;
+  }
+
+  private mergeDashboardMatrixAccess(
+    before: AmppDashboardMatrixAccess | undefined,
+    after: AmppDashboardMatrixAccess | undefined,
+    latest: AmppDashboardMatrixAccess | undefined,
+  ): AmppDashboardMatrixAccess | undefined {
+    if (after === undefined) {
+      return undefined;
+    }
+
+    const merged = this.clone(latest ?? {});
+    const previousAccess = before ?? {};
+
+    for (const workloadId of new Set([
+      ...Object.keys(previousAccess),
+      ...Object.keys(after),
+    ])) {
+      const previous = previousAccess[workloadId];
+      const current = after[workloadId];
+
+      if (this.same(previous, current)) {
+        continue;
+      }
+
+      if (!current) {
+        delete merged[workloadId];
+        continue;
+      }
+
+      const target = (merged[workloadId] ??= {});
+
+      for (const key of ['producerIds', 'consumerIds'] as const) {
+        if (!this.same(previous?.[key], current[key])) {
+          target[key] = this.mergeIds(target[key], previous?.[key], current[key]);
+        }
+      }
+
+      if (!this.same(previous?.dashboards, current.dashboards)) {
+        const dashboards = { ...(target.dashboards ?? {}) };
+        const previousDashboards = previous?.dashboards ?? {};
+        const currentDashboards = current.dashboards ?? {};
+
+        for (const dashboardId of new Set([
+          ...Object.keys(previousDashboards),
+          ...Object.keys(currentDashboards),
+        ])) {
+          if (
+            this.same(
+              previousDashboards[dashboardId],
+              currentDashboards[dashboardId],
+            )
+          ) {
+            continue;
+          }
+
+          if (!(dashboardId in currentDashboards)) {
+            delete dashboards[dashboardId];
+          } else {
+            dashboards[dashboardId] = this.clone(
+              currentDashboards[dashboardId],
+            );
+          }
+        }
+
+        target.dashboards = dashboards;
       }
     }
 

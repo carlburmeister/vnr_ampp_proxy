@@ -14,6 +14,24 @@ export type AmppMatrixAccess = Record<
   }
 >;
 
+export type AmppDashboardMatrixReferences = {
+  workloadIds?: string[];
+  producerNames?: string[];
+  consumerNames?: string[];
+};
+
+export type AmppDashboardMatrixAccess = Record<
+  string,
+  {
+    dashboards?: Record<
+      string,
+      Record<string, AmppDashboardMatrixReferences>
+    >;
+    producerIds?: string[];
+    consumerIds?: string[];
+  }
+>;
+
 declare module 'express-session' {
   interface SessionData {
     user?: AuthenticatedUser;
@@ -28,6 +46,7 @@ declare module 'express-session' {
     amppCookieJar?: ReturnType<CookieJar['toJSON']>;
     amppAccessToken?: string;
     amppMatrixAccess?: AmppMatrixAccess;
+    amppDashboardMatrixAccess?: AmppDashboardMatrixAccess;
     amppNotificationMailboxIds?: string[];
   }
 }

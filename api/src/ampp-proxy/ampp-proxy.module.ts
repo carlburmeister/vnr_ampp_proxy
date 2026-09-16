@@ -5,6 +5,7 @@ import { AmppApiProxyController } from './ampp-api-proxy.controller';
 import { AmppBearerTokenService } from './ampp-bearer-token.service';
 import { AmppBrowserSecurityService } from './ampp-browser-security.service';
 import { AmppCookieHttpService } from './ampp-cookie-http.service';
+import { AmppDashboardFilterService } from './ampp-dashboard-filter.service';
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { AmppProxyController } from './ampp-proxy.controller';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
@@ -22,6 +23,7 @@ import { AmppWebSocketProxyService } from './ampp-websocket-proxy.service';
     AmppBearerTokenService,
     AmppBrowserSecurityService,
     AmppCookieHttpService,
+    AmppDashboardFilterService,
     AmppMatrixFilterService,
     AmppProxyPolicyService,
     AmppResponseRewriterService,

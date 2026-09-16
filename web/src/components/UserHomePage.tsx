@@ -130,6 +130,24 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
   }
 
   /*-------------------------------------------------------------*/
+  //  handleDashboardClick()
+  /*-------------------------------------------------------------*/
+  function handleDashboardClick(dashboard: AllowedDashboard) {
+    setWorkloadActionError('');
+
+    const dashboardUrl =
+      `/api/ampp-proxy/ui/${encodeURIComponent(dashboard.associatedWorkloadId)}` +
+      `/cluster/systemdashboard/dashboard/${encodeURIComponent(dashboard.id)}`;
+    const newTab = window.open(dashboardUrl, '_blank');
+
+    if (!newTab) {
+      setWorkloadActionError(
+        'Unable to open a new browser tab. Please allow popups for this site.',
+      );
+    }
+  }
+
+  /*-------------------------------------------------------------*/
   //  hasWorkloadApplicationLaunchHandler()
   /*-------------------------------------------------------------*/
   function hasWorkloadApplicationLaunchHandler(
@@ -198,11 +216,11 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
           key={dashboard.id}
           type="button"
           className="workload-button child-workload-button"
-          style={{ width: buttonWidth, cursor: 'default', opacity: 1 }}
+          style={{ width: buttonWidth }}
           data-dashboard-id={dashboard.id}
           data-associated-workload-id={dashboard.associatedWorkloadId}
           data-page-type={dashboard.pageType}
-          disabled
+          onClick={() => handleDashboardClick(dashboard)}
         >
           {dashboard.name}
         </button>
