@@ -161,7 +161,10 @@ export class AuthService {
     password: string,
     passwordHash: string,
   ): Promise<boolean> {
-    return bcrypt.compare(password, passwordHash)
+    const compatibleHash = passwordHash.startsWith('$2y$')
+      ? '$2b$' + passwordHash.slice(4)
+      : passwordHash;
+    return bcrypt.compare(password, compatibleHash);
   }
   /*-------------------------------------------------------------*/
   //  getUserDBWorkloads()

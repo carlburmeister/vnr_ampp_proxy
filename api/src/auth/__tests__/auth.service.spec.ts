@@ -15,8 +15,10 @@ describe('AuthService', () => {
   let listChildWorkloads: jest.Mock;
   let getUserDBWorkloads: jest.Mock;
   let getUserDashboards: jest.Mock;
+  let storedPasswordHash: string;
 
   beforeEach(() => {
+    storedPasswordHash = 'password-hash';
     getUserDBWorkloads = jest.fn(async () => [
       {
         id: 'parent-workload-001',
@@ -57,7 +59,7 @@ describe('AuthService', () => {
           id: 'mock-user-001',
           username: 'admin',
           displayName: 'Mock AMVVPP Operator',
-          passwordHash: 'password-hash',
+          passwordHash: storedPasswordHash,
         };
       }),
       getUserDBWorkloads,
@@ -214,6 +216,26 @@ describe('AuthService', () => {
     expect(listChildWorkloads).toHaveBeenCalledWith('parent-workload-001');
     expect(getWorkload).toHaveBeenCalledTimes(2);
     expect(getWorkload).not.toHaveBeenCalledWith('direct-workload-001');
+  });
+
+  it('normalizes PHP bcrypt hashes before comparison', async () => {
+    const suffix = 'a'.repeat(53);
+    storedPasswordHash = '$2y$12$' + suffix;
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+    await service.login('admin', 'password');
+
+    expect(bcrypt.compare).toHaveBeenCalledWith('password', '$2b$12$' + suffix);
+  });
+
+  it('preserves existing Node.js bcrypt hashes', async () => {
+    const suffix = 'a'.repeat(53);
+    storedPasswordHash = '$2b$12$' + suffix;
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+    await service.login('admin', 'password');
+
+    expect(bcrypt.compare).toHaveBeenCalledWith('password', storedPasswordHash);
   });
 
   it('rejects invalid credentials', async () => {
