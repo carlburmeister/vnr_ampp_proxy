@@ -2,6 +2,8 @@ export type AuthenticatedUser = {
   id: string;
   username: string;
   displayName: string;
+  clientId: number;
+  userType: 'admin' | 'user';
 };
 
 export type LoginResponse = {

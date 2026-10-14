@@ -527,7 +527,8 @@ export class AmppDashboardFilterService {
     const dashboard = (session.allowedDashboards ?? []).find(
       (item) =>
         item.id.toLowerCase() === dashboardId.toLowerCase() &&
-        item.associatedWorkloadId.toLowerCase() === workloadId.toLowerCase(),
+        (item.associatedWorkloadId === null ||
+          item.associatedWorkloadId.toLowerCase() === workloadId.toLowerCase()),
     );
 
     if (!dashboard) {

@@ -141,6 +141,53 @@ export class AmppControlService implements OnModuleDestroy
     const client = await this.getClient();
     return client.getWorkload(workloadId);
   }
+  private dashboardNames = new Map<string, string>();
+  private dashboardNamesExpiresAt = 0;
+  private dashboardNamesPending?: Promise<Map<string, string>>;
+  private readonly workloadNames = new Map<string, { name: string; expiresAt: number }>();
+  private readonly workloadNamesPending = new Map<string, Promise<string | undefined>>();
+  private readonly nameCacheMs = 60_000;
+
+  // Share cached AMPP labels across user sessions and permission-management requests.
+  async getDashboardNames(): Promise<ReadonlyMap<string, string>> {
+    if (Date.now() < this.dashboardNamesExpiresAt) return this.dashboardNames;
+    if (!this.dashboardNamesPending) {
+      this.dashboardNamesPending = (async () => {
+        try {
+          const client = await this.getClient();
+          this.dashboardNames = await client.listDashboardNames();
+          this.dashboardNamesExpiresAt = Date.now() + this.nameCacheMs;
+        } catch {
+          // Retain last known AMPP labels; use DB names if none have loaded yet.
+          this.dashboardNamesExpiresAt = Date.now() + 15_000;
+        }
+        return this.dashboardNames;
+      })().finally(() => { this.dashboardNamesPending = undefined; });
+    }
+    return this.dashboardNamesPending;
+  }
+
+  async getWorkloadName(id: string): Promise<string | undefined> {
+    const key = id.toLowerCase();
+    const cached = this.workloadNames.get(key);
+    if (cached && Date.now() < cached.expiresAt) return cached.name || undefined;
+    const pending = this.workloadNamesPending.get(key);
+    if (pending) return pending;
+    const fetch = (async () => {
+      try {
+        const client = await this.getClient();
+        const workload = await client.getWorkload(id) as unknown as { name?: string };
+        const name = typeof workload?.name === 'string' ? workload.name.trim() : '';
+        this.workloadNames.set(key, { name, expiresAt: Date.now() + this.nameCacheMs });
+        return name || undefined;
+      } catch {
+        this.workloadNames.set(key, { name: cached?.name ?? '', expiresAt: Date.now() + 15_000 });
+        return cached?.name || undefined;
+      }
+    })().finally(() => { this.workloadNamesPending.delete(key); });
+    this.workloadNamesPending.set(key, fetch);
+    return fetch;
+  }
   /*--------------------------------------------------------------------------*/
   //  getApplicationConfig()
   /*--------------------------------------------------------------------------*/

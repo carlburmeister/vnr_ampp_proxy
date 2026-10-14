@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   createPool,
   type Pool,
+  type PoolConnection,
   type RowDataPacket,
 } from 'mysql2/promise';
 
@@ -18,10 +19,14 @@ export type UserCredentialRecord = {
   displayName: string;
   passwordHash: string;
   parentWorkloadId?: string;
+  clientId: number;
+  userType: 'admin' | 'user';
 };
 
 type UserCredentialRow = RowDataPacket & {
   user_id: number | string;
+  client_id: number;
+  user_type: 'admin' | 'user';
   client_name: string;
   username: string;
   password_hash: string;
@@ -37,7 +42,7 @@ type UserDBWorkloadRow = RowDataPacket & {
 
 type UserDashboardRow = RowDataPacket & {
   dashboard_id: string;
-  associated_workload_id: string;
+  associated_workload_id: string | null;
   name: string;
   page_type: AllowedDashboard['pageType'];
 };
@@ -62,6 +67,15 @@ export class UserCredentialsRepository implements OnModuleDestroy {
   async onModuleDestroy() {
     await this.pool.end();
   }
+  // Share one MySQL pool with the client permission-management endpoints.
+  async withConnection<T>(run: (connection: PoolConnection) => Promise<T>): Promise<T> {
+    const connection = await this.pool.getConnection();
+    try {
+      return await run(connection);
+    } finally {
+      connection.release();
+    }
+  }
   /*--------------------------------------------------------------------*/
   //  findByUsername()
   /*--------------------------------------------------------------------*/
@@ -76,6 +90,8 @@ export class UserCredentialsRepository implements OnModuleDestroy {
       `SELECT
           c.name AS client_name,
           u.row_id AS user_id,
+          u.client_id,
+          u.user_type,
           u.username,
           u.password_hash
        FROM client_users u
@@ -95,27 +111,52 @@ export class UserCredentialsRepository implements OnModuleDestroy {
       username: firstRow.username,
       displayName: firstRow.client_name,
       passwordHash: firstRow.password_hash,
+      clientId: firstRow.client_id,
+      userType: firstRow.user_type,
       //parentWorkloadId: firstRow.workload_id ?? undefined,
     };
+  }
+  /*--------------------------------------------------------------------*/
+  //  findById()
+  /*--------------------------------------------------------------------*/
+  async findById(userId: string): Promise<UserCredentialRecord | null> {
+    const [rows] = await this.pool.execute<UserCredentialRow[]>(
+      `SELECT u.row_id AS user_id, u.client_id, u.user_type,
+              u.username, u.password_hash, c.name AS client_name
+       FROM client_users u
+       JOIN clients c ON c.row_id = u.client_id
+       WHERE u.row_id = ?`,
+      [userId],
+    );
+
+    const row = rows[0];
+    return row ? {
+      id: String(row.user_id),
+      username: row.username,
+      displayName: row.client_name,
+      passwordHash: row.password_hash,
+      clientId: row.client_id,
+      userType: row.user_type,
+    } : null;
   }
   /*--------------------------------------------------------------------*/
   //  getUserDBWorkloads()
   /*--------------------------------------------------------------------*/
   async getUserDBWorkloads(userId: string): Promise<UserDBWorkload[]> {
     const [rows] = await this.pool.execute<UserDBWorkloadRow[]>(
-      `SELECT
-          workload_id,
-          is_parent,
-          page_type
-       FROM ampp_workloads
-       WHERE user_id = ?
-       ORDER BY is_parent DESC, row_id ASC`,
+      `SELECT w.workload_id, w.name, w.is_parent, w.page_type
+       FROM client_user_workload_permissions p
+       JOIN client_users u ON u.row_id = p.user_id
+       JOIN ampp_workloads w ON w.row_id = p.ampp_workload_id
+                             AND w.client_id = u.client_id
+       WHERE p.user_id = ?
+       ORDER BY w.is_parent DESC, w.row_id ASC`,
       [userId],
     );
 
     return rows.map((row) => ({
       id: row.workload_id,
-      name: '',
+      name: row.name,
       is_parent: row.is_parent ? 1 : 0,
       pageType: row.page_type,
     }));
@@ -125,14 +166,13 @@ export class UserCredentialsRepository implements OnModuleDestroy {
   /*--------------------------------------------------------------------*/
   async getUserDashboards(userId: string): Promise<AllowedDashboard[]> {
     const [rows] = await this.pool.execute<UserDashboardRow[]>(
-      `SELECT
-          dashboard_id,
-          associated_workload_id,
-          name,
-          page_type
-       FROM ampp_dashboards
-       WHERE user_id = ?
-       ORDER BY row_id ASC`,
+      `SELECT d.dashboard_id, d.associated_workload_id, d.name, d.page_type
+       FROM client_user_dashboard_permissions p
+       JOIN client_users u ON u.row_id = p.user_id
+       JOIN ampp_dashboards d ON d.row_id = p.ampp_dashboard_id
+                              AND d.client_id = u.client_id
+       WHERE p.user_id = ?
+       ORDER BY d.row_id ASC`,
       [userId],
     );
 
@@ -143,4 +183,22 @@ export class UserCredentialsRepository implements OnModuleDestroy {
       pageType: row.page_type,
     }));
   }
+  /*--------------------------------------------------------------------*/
+  //  getWorkloadDenials()
+  /*--------------------------------------------------------------------*/
+  async getWorkloadDenials(userId: string): Promise<string[]> {
+    const [rows] = await this.pool.execute<(RowDataPacket & { workload_id: string })[]>(
+      `SELECT d.workload_id
+       FROM client_user_workload_denials d
+       JOIN client_users u ON u.row_id = d.user_id
+       WHERE d.user_id = ? ORDER BY d.workload_id`,
+      [userId],
+    );
+    return rows.map((row) => row.workload_id.toLowerCase());
+  }
+  /*--------------------------------------------------------------------*/
+  //  compareLegacyPermissions()
+  //  Diagnostics only. The legacy tables never authorize requests.
+  //  Step 8: comparison removed with the legacy per-user resource columns.
+  /*--------------------------------------------------------------------*/
 }

@@ -4,6 +4,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AuthService } from '../auth/auth.service';
 import type { Request, RequestHandler, Response } from 'express';
 import type { SessionData } from 'express-session';
 import {
@@ -13,6 +14,7 @@ import {
 } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { CookieJar } from 'tough-cookie';
+import type { Store } from 'express-session';
 
 import { AmppBearerTokenService } from './ampp-bearer-token.service';
 import {
@@ -68,6 +70,7 @@ const WEBSOCKET_PROXY_PREFIX = '/api/ampp-proxy/ws/';
 type UpgradeRequest = IncomingMessage & {
   session?: SessionData;
   sessionID?: string;
+  sessionStore?: Store;
 };
 
 type ParsedProxyRequest = {
@@ -93,6 +96,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     private readonly bearerToken: AmppBearerTokenService,
     private readonly matrixFilter: AmppMatrixFilterService,
     private readonly policy: AmppProxyPolicyService,
+    private readonly auth: AuthService,
   ) {
     this.platformUrl = new URL(
       this.config.getOrThrow<string>('PLATFORM_URL'),
@@ -163,6 +167,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
       throw new HttpException('Login required', 401);
     }
 
+    await this.auth.refreshSessionAuthorization(request.session);
     return this.policy.assertWebSocketAccess(
       request.session,
       parsedRequest.workloadId,
@@ -179,8 +184,26 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     let pendingBytes = 0;
     let upstream: WebSocketConnection | undefined;
     let browserClosed = false;
+    // Revalidate live sockets as permissions can change after the upgrade.
+    const permissionCheck = setInterval(() => {
+      void this.getStoredSession(request)
+        .then(async (latest) => {
+          if (!latest?.user) {
+            browser.close(1008, 'Session expired');
+            return;
+          }
+          request.session = latest;
+          await this.auth.refreshSessionAuthorization(latest);
+          this.policy.assertWebSocketAccess(
+            latest, this.parseProxyRequest(request.url)?.workloadId ?? '', upstreamPath,
+          );
+        })
+        .catch(() => browser.close(1008, 'Permission revoked'));
+    }, 10000);
+    permissionCheck.unref();
 
     browser.on('close', (code: number, reason: unknown) => {
+      clearInterval(permissionCheck);
       browserClosed = true;
 
       if (upstream) {
@@ -189,6 +212,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     });
 
     browser.on('error', () => {
+      clearInterval(permissionCheck);
       browserClosed = true;
       upstream?.terminate();
     });
@@ -415,6 +439,18 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     }
 
     return result;
+  }
+
+  private getStoredSession(request: UpgradeRequest): Promise<SessionData | null> {
+    if (!request.sessionStore || !request.sessionID) {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve, reject) => {
+      request.sessionStore!.get(request.sessionID!, (error, stored) => {
+        if (error) reject(error);
+        else resolve(stored ?? null);
+      });
+    });
   }
 
   private loadSession(request: UpgradeRequest): Promise<void> {

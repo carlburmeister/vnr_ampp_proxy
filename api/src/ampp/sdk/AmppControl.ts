@@ -130,6 +130,35 @@ export class AmppControl extends events.EventEmitter {
   }
 
   /**
+   * listDashboardNames
+   * Retrieves the AMPP system dashboard metadata as a single configuration list.
+   */
+  async listDashboardNames(): Promise<Map<string, string>> {
+    const response = await this.gvPlatform.get(
+      '/configuration/api/v1/configurations/startsWith/gv/systemdashboards/dashboard-list',
+    );
+    if (!Array.isArray(response.data)) {
+      throw new Error('Invalid AMPP dashboard list response');
+    }
+    const names = new Map<string, string>();
+    for (const item of response.data) {
+      try {
+        const config = item?.configuration;
+        const dashboard = typeof config?.value === 'string'
+          ? JSON.parse(config.value)
+          : config?.value;
+        if (typeof dashboard?.id === 'string' &&
+            typeof dashboard?.name === 'string' && dashboard.name.trim()) {
+          names.set(dashboard.id.toLowerCase(), dashboard.name);
+        }
+      } catch {
+        // Skip malformed individual entries without losing other dashboard names.
+      }
+    }
+    return names;
+  }
+
+  /**
    * getApplicationConfig
    * uses AMPP Mocha API to get application configuration data
    */

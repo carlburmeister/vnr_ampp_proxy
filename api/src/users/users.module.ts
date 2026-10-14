@@ -12,10 +12,14 @@
 
 import { Module } from '@nestjs/common';
 
+import { AmppControlClientModule } from '../ampp/ampp-control-client.module';
+import { ClientPermissionsService } from './services/client-permissions.service';
+
 import { UserCredentialsRepository } from './services/user-credentials.repository';
 
 @Module({
-  providers: [UserCredentialsRepository],
-  exports: [UserCredentialsRepository],
+  imports: [AmppControlClientModule],
+  providers: [UserCredentialsRepository, ClientPermissionsService],
+  exports: [UserCredentialsRepository, ClientPermissionsService],
 })
 export class UsersModule {}

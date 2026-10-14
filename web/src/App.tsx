@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import './App.css';
 import { LoginPage } from './components/LoginPage';
@@ -9,45 +9,70 @@ import { getCurrentSession, type SessionData } from './services/amppSessionApi';
 
 function App() {
   
+  const sessionGeneration = useRef(0);
   const [currentSession, setCurrentSession] = useState<SessionData | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [authError, setAuthError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
+    let pending = false;
+    let initialCheckDone = false;
 
     async function loadCurrentSession() {
+      if (pending) return;
+      pending = true;
+      const generation = sessionGeneration.current;
       try {
         const session = await getCurrentSession();
 
-        if (!cancelled) {
-          setCurrentSession(session);
+        if (!cancelled && generation === sessionGeneration.current) {
+          setCurrentSession((previous) => JSON.stringify(previous) === JSON.stringify(session) ? previous : session);
           setAuthError('');
         }
       } catch (err) {
-        if (!cancelled) {
-          setCurrentSession(null);
+        if (!cancelled && !initialCheckDone && generation === sessionGeneration.current) {
           setAuthError(err instanceof Error ? err.message : 'Unknown auth error');
         }
       } finally {
+        pending = false;
+        initialCheckDone = true;
         if (!cancelled) {
           setAuthChecked(true);
         }
       }
     }
 
-    loadCurrentSession();
+    void loadCurrentSession();
+
+    // Refresh displayed access when another admin changes permissions.
+    const timer = window.setInterval(() => {
+      if (!cancelled && !document.hidden) void loadCurrentSession();
+    }, 10000);
+    const onFocus = () => { if (!cancelled && !pending) void loadCurrentSession(); };
+    window.addEventListener('focus', onFocus);
 
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
     };
   }, []);
   
+  /*-------------------------------------------------------------*/
+  //  refreshOwnPermissions()
+  /*-------------------------------------------------------------*/
+  async function refreshOwnPermissions() {
+    const session = await getCurrentSession();
+    setCurrentSession((previous) => JSON.stringify(previous) === JSON.stringify(session) ? previous : session);
+  }
+
   /*-------------------------------------------------------------*/
   //  handleLogin()
   /*-------------------------------------------------------------*/
   async function handleLogin(_result: LoginResponse) 
   {
+    sessionGeneration.current += 1;
     const session = await getCurrentSession();
 
     if (!session) {
@@ -62,6 +87,7 @@ function App() {
   /*-------------------------------------------------------------*/
   async function handleLogout() 
   {
+    sessionGeneration.current += 1;
     try {
       await logoutUser();
     } finally {
@@ -79,11 +105,16 @@ function App() {
   }
 
   const workloadApplicationRoute = renderWorkloadApplicationRoute(window.location.pathname);
+  const routeWorkloadId = new URLSearchParams(window.location.search).get('workloadId');
+  const authorizedRoute = !routeWorkloadId || currentSession?.allowedWorkloads.some((workload) =>
+    workload.id === routeWorkloadId || workload.child_workloads?.some((child) => child.id === routeWorkloadId),
+  );
 
   return (
     <main className="app-shell">
       {currentSession ? (
-        workloadApplicationRoute ?? <UserHomePage session={currentSession} onLogout={handleLogout} />
+        (authorizedRoute ? workloadApplicationRoute : null) ?? <UserHomePage session={currentSession} onLogout={handleLogout}
+          onPermissionsSaved={() => { void refreshOwnPermissions().catch(console.error); }} />
       ) : (
         <>
           {authError && <p style={{ color: 'red' }}>{authError}</p>}

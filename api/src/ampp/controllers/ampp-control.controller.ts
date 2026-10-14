@@ -12,9 +12,10 @@ import {
 } from '@nestjs/common';
 
 import type { Request } from 'express';
-import { map, Observable } from 'rxjs';
+import { concatMap, filter, map, Observable } from 'rxjs';
 
 import { SessionAuthGuard } from '../../auth/session-auth.guard';
+import { AuthService } from '../../auth/auth.service';
 import { AmppControlService } from '../services/ampp-control.service';
 import type { AllowedWorkload } from '../types/workload_types';
 
@@ -22,7 +23,10 @@ import type { AllowedWorkload } from '../types/workload_types';
 @Controller('ampp/control')
 @UseGuards(SessionAuthGuard)
 export class AmppControlController {
-  constructor(private readonly amppControl: AmppControlService) {}
+  constructor(
+    private readonly amppControl: AmppControlService,
+    private readonly auth: AuthService,
+  ) {}
 
   @Get('application-types')
   listApplicationTypes() {
@@ -48,7 +52,7 @@ export class AmppControlController {
       return [];
     }
 
-    return workloads.filter((workload: any) => allowedIds.includes(workload.id));
+    return workloads.filter((workload: any) => allowedIds.includes(workload.id?.toLowerCase()));
   }
 
   /*--------------------------------------------------------------------*/
@@ -78,9 +82,14 @@ export class AmppControlController {
   ) {
     this.assertWorkloadAllowed(req, workload_id);
 
-    const workloads = await this.amppControl.listChildWorkloads(workload_id);    
-
-    return workloads;
+    const workloads = await this.amppControl.listChildWorkloads(workload_id);
+    const allowedIds = new Set(this.getAllowedWorkloadIds(req));
+    return {
+      ...workloads,
+      workloads: (workloads.workloads ?? []).filter(
+        (item) => allowedIds.has(item.workload.id.toLowerCase()),
+      ),
+    };
   }
 
   @Get('workloads/:workload_id/config')
@@ -112,7 +121,8 @@ export class AmppControlController {
 
   @Get('macros')
   listMacros() {
-    return this.amppControl.listMacros();
+    // Macros are not linked to client workloads in the current DB schema.
+    return [];
   }
 
   @Post('macros/:uuid/execute')
@@ -120,7 +130,7 @@ export class AmppControlController {
     @Param('uuid') uuid: string,
     @Body() body?: { reconKey?: string },
   ) {
-    return this.amppControl.executeMacro(uuid, body?.reconKey);
+    throw new ForbiddenException('Macros require explicit workload-scoped authorization');
   }
 
   @Post('message')
@@ -185,7 +195,16 @@ export class AmppControlController {
   }
 
   @Post('notifications/subscribe')
-  subscribeToNotificationTopic(@Body() body: { topic: string }) {
+  subscribeToNotificationTopic(
+    @Body() body: { topic: string },
+    @Req() req: Request,
+  ) {
+    const ids = this.getAllowedWorkloadIds(req);
+    const uuids = body.topic?.match(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/gi) ?? [];
+    if (uuids.length !== 1 || !ids.includes(uuids[0].toLowerCase()) ||
+        /[#+*]/.test(body.topic)) {
+      throw new ForbiddenException('Notification topic is not authorized');
+    }
     return this.amppControl.subscribeToNotificationTopic(body.topic);
   }
 
@@ -199,21 +218,30 @@ export class AmppControlController {
   }
 
   @Sse('notifications/stream')
-  streamNotifications(): Observable<MessageEvent> {
+  streamNotifications(@Req() req: Request): Observable<MessageEvent> {
     return this.amppControl.notificationEvents().pipe(
-      map((event) => ({
-        data: event,
-      })),
+      concatMap(async (event): Promise<MessageEvent | null> => {
+        // Long-lived streams must not retain revoked permissions.
+        await this.auth.refreshSessionAuthorization(req.session);
+        const ids = event.data.topic?.match(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/gi) ?? [];
+        const allowed = new Set(this.getAllowedWorkloadIds(req));
+        return ids.length && ids.every((id) => allowed.has(id.toLowerCase()))
+          ? { data: event }
+          : null;
+      }),
+      filter((event): event is MessageEvent => event !== null),
     );
   }
 
   private getAllowedWorkloadIds(req: Request) {
     const allowedWorkloads: AllowedWorkload[] = req.session.allowedWorkloads ?? [];
-
-    return allowedWorkloads.flatMap((workload) => [
-      workload.id,
-      ...(workload.child_workloads ?? []).map((childWorkload) => childWorkload.id),
-    ]);
+    return [...new Set([
+      ...allowedWorkloads.flatMap((workload) => [
+        workload.id,
+        ...(workload.child_workloads ?? []).map((child) => child.id),
+      ]),
+      ...(req.session.amppAllowedWorkloadIds ?? []),
+    ].map((id) => id.toLowerCase()))];
   }
 
   private assertWorkloadAllowed(req: Request, workloadId?: string) {
@@ -224,7 +252,7 @@ export class AmppControlController {
       throw new ForbiddenException('No allowed workloads found for this session');
     }
 
-    if (!workloadId || !allowedIds.includes(workloadId)) {
+    if (!workloadId || !allowedIds.includes(workloadId.toLowerCase())) {
       throw new ForbiddenException('Workload is not allowed for this session');
     }
   }

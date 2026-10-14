@@ -2,7 +2,7 @@ export type DashboardPageType = 'custom' | 'ampp-ui';
 
 export type AllowedDashboard = {
   id: string;
-  associatedWorkloadId: string;
+  associatedWorkloadId: string | null;
   name: string;
   pageType: DashboardPageType;
 };

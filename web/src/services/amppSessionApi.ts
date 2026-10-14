@@ -27,7 +27,7 @@ export type AllowedWorkload = {
 
 export type AllowedDashboard = {
   id: string;
-  associatedWorkloadId: string;
+  associatedWorkloadId: string | null;
   name: string;
   pageType: WorkloadPageType;
 };

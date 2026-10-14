@@ -7,11 +7,13 @@ import {
   Req,
   Res,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 
 import { LoginDto } from './dto/login.dto';
 import { AuthService } from './auth.service';
+import { SessionAuthGuard } from './session-auth.guard';
 
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME ?? 'amvvpp.sid';
 
@@ -41,14 +43,7 @@ export class AuthController {
       });
     });
 
-    req.session.user = result.user;
-    req.session.parentWorkloadId = result.parentWorkloadId;
-    req.session.fabricId = result.fabricId;
-    req.session.nodeId = result.nodeId;
-    req.session.allowedWorkloads = result.allowedWorkloads;
-    req.session.allowedDashboardIds = result.allowedDashboardIds;
-    req.session.allowedDashboards = result.allowedDashboards;
-    req.session.amppAllowedWorkloadIds = result.amppAllowedWorkloadIds;
+    this.auth.applyAuthorization(req.session, result);
 
     await new Promise<void>((resolve, reject) => {
       req.session.save((error) => {
@@ -68,6 +63,7 @@ export class AuthController {
   //  me()
   /*-------------------------------------------------------------*/ 
   @Get('me')
+  @UseGuards(SessionAuthGuard)
   me(@Req() req: Request) {
     if (!req.session.user) {
       throw new UnauthorizedException('Login required');

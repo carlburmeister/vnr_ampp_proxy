@@ -160,4 +160,34 @@ describe('AmppProxyPolicyService', () => {
       ),
     ).toBe('/notifications/api/v1/mailbox');
   });
+  it('allows standalone dashboards from an authorized workload scope', () => {
+    session.allowedDashboards = [
+      {
+        id: dashboardId,
+        associatedWorkloadId: null,
+        name: 'Standalone Dashboard',
+        pageType: 'ampp-ui',
+      },
+    ];
+    const dashboardPath = `/cluster/systemdashboard/dashboard/${dashboardId}`;
+    const dashboardApiPath =
+      `/configuration/api/v1/configuration/gv/systemdashboards/dashboards/${dashboardId}`;
+
+    expect(service.assertUiResourceAccess(session, workloadId, dashboardPath)).toBe(dashboardPath);
+    expect(service.assertUiResourceAccess(session, secondWorkloadId, dashboardPath)).toBe(dashboardPath);
+    expect(service.assertApiAccess(session, workloadId, 'GET', dashboardApiPath)).toBe(dashboardApiPath);
+    expect(() =>
+      service.assertUiResourceAccess(session, unauthorizedWorkloadId, dashboardPath),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('does not expose workload-associated dashboards to other workloads', () => {
+    const dashboardPath = `/cluster/systemdashboard/dashboard/${dashboardId}`;
+
+    expect(service.assertUiResourceAccess(session, workloadId, dashboardPath)).toBe(dashboardPath);
+    expect(() =>
+      service.assertUiResourceAccess(session, secondWorkloadId, dashboardPath),
+    ).toThrow(ForbiddenException);
+  });
+
 });

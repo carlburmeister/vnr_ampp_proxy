@@ -51,6 +51,21 @@ export class AmppProxySessionService {
         const latest = await this.getStoredSession(req);
 
         if (latest) {
+          // Another request may have refreshed permissions while this request
+          // was proxied. Never overwrite that newer authorization snapshot.
+          if (latest.authorizationFingerprint !== req.session.authorizationFingerprint) {
+            for (const key of [
+              'user', 'parentWorkloadId', 'fabricId', 'nodeId',
+              'allowedWorkloads', 'allowedDashboardIds', 'allowedDashboards',
+              'amppAllowedWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
+              'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
+            ] as const) {
+              (req.session as any)[key] = this.clone(latest[key]);
+            }
+            // Do not merge data derived under revoked permissions.
+            return;
+          }
+          req.session.authorizationCheckedAt = latest.authorizationCheckedAt;
           for (const key of SESSION_KEYS) {
             if (!changedKeys.includes(key)) {
               this.setValue(req.session, key, latest[key]);

@@ -25,6 +25,8 @@ describe('UserCredentialsRepository', () => {
       [
         {
           user_id: 'mock-user-001',
+          client_id: 12,
+          user_type: 'user',
           client_name: 'Mock AMVVPP Operator',
           username: 'operator',
           password_hash: 'secret',
@@ -49,6 +51,8 @@ describe('UserCredentialsRepository', () => {
       username: 'operator',
       displayName: 'Mock AMVVPP Operator',
       passwordHash: 'secret',
+      clientId: 12,
+      userType: 'user',
     });
 
     expect(execute).toHaveBeenCalledWith(expect.any(String), ['operator']);
@@ -59,11 +63,13 @@ describe('UserCredentialsRepository', () => {
       [
         {
           workload_id: 'parent-workload-001',
+          name: 'Admin Parent Workload',
           is_parent: 1,
           page_type: 'custom',
         },
         {
           workload_id: 'direct-workload-001',
+          name: 'Admin Direct Workload',
           is_parent: 0,
           page_type: 'ampp-ui',
         },
@@ -85,19 +91,20 @@ describe('UserCredentialsRepository', () => {
     await expect(repository.getUserDBWorkloads('mock-user-001')).resolves.toEqual([
       {
         id: 'parent-workload-001',
-        name: '',
+        name: 'Admin Parent Workload',
         is_parent: 1,
         pageType: 'custom',
       },
       {
         id: 'direct-workload-001',
-        name: '',
+        name: 'Admin Direct Workload',
         is_parent: 0,
         pageType: 'ampp-ui',
       },
     ]);
 
-    expect(execute).toHaveBeenCalledWith(expect.any(String), ['mock-user-001']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('w.name'), ['mock-user-001']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('w.client_id = u.client_id'), ['mock-user-001']);
   });
 
   it('returns assigned dashboards for the user', async () => {
@@ -133,6 +140,38 @@ describe('UserCredentialsRepository', () => {
       },
     ]);
 
-    expect(execute).toHaveBeenCalledWith(expect.any(String), ['mock-user-001']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('d.client_id = u.client_id'), ['mock-user-001']);
   });
+  it('preserves null associations for standalone dashboards', async () => {
+    execute.mockResolvedValueOnce([
+      [
+        {
+          dashboard_id: 'standalone-dashboard',
+          associated_workload_id: null,
+          name: 'Standalone Dashboard',
+          page_type: 'ampp-ui',
+        },
+      ],
+    ]);
+
+    const config = { get: jest.fn() } as unknown as ConfigService;
+    const repository = new UserCredentialsRepository(config);
+
+    await expect(repository.getUserDashboards('mock-user-001')).resolves.toEqual([
+      {
+        id: 'standalone-dashboard',
+        associatedWorkloadId: null,
+        name: 'Standalone Dashboard',
+        pageType: 'ampp-ui',
+      },
+    ]);
+  });
+
+  it('loads explicitly denied AMPP child UUIDs', async () => {
+    execute.mockResolvedValueOnce([[{ workload_id: 'UUID-A' }, { workload_id: 'uuid-b' }]]);
+    const repository = new UserCredentialsRepository({ get: jest.fn() } as any);
+    await expect(repository.getWorkloadDenials('123')).resolves.toEqual(['uuid-a', 'uuid-b']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('client_user_workload_denials'), ['123']);
+  });
+
 });

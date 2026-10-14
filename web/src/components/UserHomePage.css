@@ -32,6 +32,22 @@
   gap: 0.5rem;
 }
 
+.workload-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.workload-expand-button {
+  padding: 0.85rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--social-bg);
+  color: var(--text-h);
+  font: inherit;
+  cursor: pointer;
+}
+
 .workload-button {
   padding: 0.85rem 1rem;
   border: 1px solid var(--border);
@@ -102,3 +118,10 @@
   background: #000;
   border-radius: 8px;
 }
+
+/* Client admin Actions menu. The editor is implemented in Step 6. */
+.user-actions { position: relative; }
+.user-actions-menu { position: absolute; z-index: 10; right: 0; top: 100%; min-width: 170px; padding: 4px; background: #fff; color: #222; border: 1px solid #ccc; box-shadow: 0 3px 10px #0002; }
+.user-actions-menu button { display: block; width: 100%; text-align: left; margin: 2px 0; }
+.user-management-notice { margin: 1rem 0; }
+.user-management-notice button { margin-left: 1rem; }

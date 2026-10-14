@@ -1216,7 +1216,9 @@ export class AmppProxyPolicyService {
     const normalizedWorkloadId = workloadId.toLowerCase();
     return (session.allowedDashboards ?? []).some(
       (dashboard) =>
-        dashboard.associatedWorkloadId.toLowerCase() === normalizedWorkloadId,
+        (dashboard.associatedWorkloadId === null ||
+          (dashboard.associatedWorkloadId.toLowerCase() === normalizedWorkloadId &&
+            this.getAuthorizedWorkloadIds(session).has(normalizedWorkloadId))),
     );
   }
 
@@ -1235,7 +1237,9 @@ export class AmppProxyPolicyService {
       (session.allowedDashboards ?? []).some(
         (dashboard) =>
           dashboard.id.toLowerCase() === normalizedDashboardId &&
-          dashboard.associatedWorkloadId.toLowerCase() === normalizedWorkloadId,
+          (dashboard.associatedWorkloadId === null ||
+            (dashboard.associatedWorkloadId.toLowerCase() === normalizedWorkloadId &&
+              this.getAuthorizedWorkloadIds(session).has(normalizedWorkloadId))),
       )
     );
   }

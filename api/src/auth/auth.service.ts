@@ -1,4 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
+import type { SessionData } from 'express-session';
 import * as bcrypt from 'bcrypt';
 
 import { AmppControlService } from '../ampp/services/ampp-control.service';
@@ -11,12 +14,14 @@ import type {
   UserDBWorkload,
   WorkloadPageType,
 } from '../ampp/types/workload_types';
-import { UserCredentialsRepository } from '../users/services/user-credentials.repository';
+import { UserCredentialsRepository, type UserCredentialRecord } from '../users/services/user-credentials.repository';
 
 export type AuthenticatedUser = {
   id: string;
   username: string;
   displayName: string;
+  clientId: number;
+  userType: 'admin' | 'user';
 };
 
 export type LoginResult = {
@@ -28,6 +33,7 @@ export type LoginResult = {
   allowedDashboardIds: string[];
   allowedDashboards: AllowedDashboard[];
   amppAllowedWorkloadIds: string[];
+  authorizationFingerprint: string;
 };
 
 // Define the precise structure of your data
@@ -47,6 +53,7 @@ export class AuthService {
   constructor(
     private readonly userCredentials: UserCredentialsRepository,
     private readonly amppControl: AmppControlService,
+    private readonly config?: ConfigService,
   ) {}
 
   /*-------------------------------------------------------------*/
@@ -61,15 +68,122 @@ export class AuthService {
     }
 
 
-    /* Get user's assigned workloads from the DB */
-    const [userDBWorkloads, allowedDashboards] = await Promise.all([
+    return this.buildAuthorization(user);
+  }
+  /*-------------------------------------------------------------*/
+  //  refreshSessionAuthorization()
+  //  Recheck on a configurable interval; refresh permissions when changed.
+  /*-------------------------------------------------------------*/
+  async refreshSessionAuthorization(session: SessionData): Promise<boolean> {
+    if (!session.user) {
+      throw new UnauthorizedException('Login required');
+    }
+
+    const interval = Math.max(0, Number(
+      this.config?.get<string>('AUTH_PERMISSION_REFRESH_INTERVAL_MS') ?? 10000,
+    ) || 0);
+    if (session.authorizationCheckedAt &&
+        Date.now() - session.authorizationCheckedAt < interval) {
+      return false;
+    }
+
+    const user = await this.userCredentials.findById(session.user.id);
+    if (!user) {
+      throw new UnauthorizedException('Account no longer exists');
+    }
+
+    const [workloads, dashboards, denials] = await Promise.all([
       this.getUserDBWorkloads(user.id),
       this.userCredentials.getUserDashboards(user.id),
+      this.userCredentials.getWorkloadDenials(user.id),
     ]);
-    const parentDBWorkloads = userDBWorkloads.filter(
+    const fingerprint = this.getFingerprint(user, workloads, dashboards, denials);
+    session.authorizationCheckedAt = Date.now();
+    if (session.authorizationFingerprint === fingerprint) {
+      // Refresh display labels without rebuilding authorization or changing access.
+      const resolved = await this.withAmppDashboardNames(dashboards);
+      const dashboardNames = new Map(resolved.map((item) => [item.id.toLowerCase(), item.name]));
+      session.allowedDashboards = (session.allowedDashboards ?? []).map((dashboard) => ({
+        ...dashboard,
+        name: dashboardNames.get(dashboard.id.toLowerCase()) ?? dashboard.name,
+      }));
+      const registeredNames = new Map(await Promise.all(workloads.map(async (workload) => [
+        workload.id.toLowerCase(),
+        await this.amppControl.getWorkloadName(workload.id) || workload.name,
+      ] as const)));
+      session.allowedWorkloads = (session.allowedWorkloads ?? []).map((workload) => ({
+        ...workload,
+        name: registeredNames.get(workload.id.toLowerCase()) ?? workload.name,
+        child_workloads: workload.child_workloads?.map((child) => ({
+          ...child,
+          name: registeredNames.get(child.id.toLowerCase()) ?? child.name,
+        })),
+      }));
+      return true; // Persist the recheck time to avoid re-querying on every request.
+    }
+
+    const result = await this.buildAuthorization(user, workloads, dashboards, denials);
+    const clientChanged = session.user.clientId !== result.user.clientId;
+    this.applyAuthorization(session, result);
+    session.amppMatrixAccess = undefined;
+    session.amppDashboardMatrixAccess = undefined;
+    session.amppNotificationMailboxIds = undefined;
+    if (clientChanged) {
+      session.amppUserId = undefined;
+      session.amppAccessToken = undefined;
+      session.amppCookieJar = undefined;
+    }
+    return true;
+  }
+  /*-------------------------------------------------------------*/
+  //  applyAuthorization()
+  /*-------------------------------------------------------------*/
+  applyAuthorization(session: SessionData, result: LoginResult): void {
+    session.user = result.user;
+    session.parentWorkloadId = result.parentWorkloadId;
+    session.fabricId = result.fabricId;
+    session.nodeId = result.nodeId;
+    session.allowedWorkloads = result.allowedWorkloads;
+    session.allowedDashboardIds = result.allowedDashboardIds;
+    session.allowedDashboards = result.allowedDashboards;
+    session.amppAllowedWorkloadIds = result.amppAllowedWorkloadIds;
+    session.authorizationFingerprint = result.authorizationFingerprint;
+    session.authorizationCheckedAt = Date.now();
+  }
+  private async withAmppDashboardNames(dashboards: AllowedDashboard[]): Promise<AllowedDashboard[]> {
+    if (!dashboards.some((dashboard) => dashboard.pageType === 'ampp-ui')) return dashboards;
+    const names = await this.amppControl.getDashboardNames();
+    return dashboards.map((dashboard) => ({
+      ...dashboard,
+      name: dashboard.pageType === 'ampp-ui'
+        ? names.get(dashboard.id.toLowerCase()) || dashboard.name
+        : dashboard.name,
+    }));
+  }
+
+  /*-------------------------------------------------------------*/
+  //  buildAuthorization()
+  /*-------------------------------------------------------------*/
+  private async buildAuthorization(
+    user: UserCredentialRecord,
+    suppliedWorkloads?: UserDBWorkload[],
+    suppliedDashboards?: AllowedDashboard[],
+    suppliedDenials?: string[],
+  ): Promise<LoginResult> {
+    /* Get user's assigned workloads from the DB */
+    const [userDBWorkloads, assignedDashboards, deniedIds] = await Promise.all([
+      suppliedWorkloads ?? this.getUserDBWorkloads(user.id),
+      suppliedDashboards ?? this.userCredentials.getUserDashboards(user.id),
+      suppliedDenials ?? this.userCredentials.getWorkloadDenials(user.id),
+    ]);
+    const denied = new Set(deniedIds.map((id) => id.toLowerCase()));
+    const activeDBWorkloads = userDBWorkloads.filter(
+      (workload) => !denied.has(workload.id.toLowerCase()),
+    );
+    const parentDBWorkloads = activeDBWorkloads.filter(
       (workload) => workload.is_parent === 1,
     );
-    const individualDBWorkloads = userDBWorkloads.filter(
+    const individualDBWorkloads = activeDBWorkloads.filter(
       (workload) => workload.is_parent === 0,
     );
 
@@ -79,15 +193,15 @@ export class AuthService {
 
         return {
           ...workload,
-          name: workload_resp.name,
+          name: workload_resp.name || workload.name,
           applicationName: workload_resp.applicationName,
           packageName: workload_resp.packageName,
           fabricId: workload_resp.fabricId,
           nodeId: workload_resp.nodeId,
-          child_workloads: await this.getChildWorkloads(
+          child_workloads: (await this.getChildWorkloads(
             workload.id,
             workload.pageType,
-          ),
+          )).filter((child) => !denied.has(child.id.toLowerCase())),
         };
       }),
     );
@@ -105,6 +219,7 @@ export class AuthService {
         );
 
         if (matchingChildWorkload) {
+          // AMPP is authoritative for child display names; only override page type.
           matchingChildWorkload.pageType = individualWorkload.pageType;
         }
       }
@@ -120,7 +235,7 @@ export class AuthService {
 
         return {
           ...workload,
-          name: workload_resp.name,
+          name: workload_resp.name || workload.name,
           applicationName: workload_resp.applicationName,
           packageName: workload_resp.packageName,
           fabricId: workload_resp.fabricId,
@@ -136,14 +251,21 @@ export class AuthService {
 
     const firstWorkload = this.getFirstResolvedWorkload(allowedWorkloads);
     const amppAllowedWorkloadIds = await this.getAmppAllowedWorkloadIds(
-      allowedWorkloads,
+      allowedWorkloads, denied,
     );
+    const effectiveIds = new Set(amppAllowedWorkloadIds.map((id) => id.toLowerCase()));
+    const allowedDashboards = await this.withAmppDashboardNames(assignedDashboards.filter(
+      (dashboard) => dashboard.associatedWorkloadId === null ||
+        effectiveIds.has(dashboard.associatedWorkloadId.toLowerCase()),
+    ));
 
     return {
       user: {
         id: user.id,
         username: user.username,
         displayName: user.displayName,
+        clientId: user.clientId,
+        userType: user.userType,
       },
       parentWorkloadId: allowedWorkloads.find((workload) => workload.is_parent)?.id,
       fabricId: firstWorkload?.fabricId ?? '',
@@ -152,7 +274,29 @@ export class AuthService {
       allowedDashboardIds: allowedDashboards.map((dashboard) => dashboard.id),
       allowedDashboards,
       amppAllowedWorkloadIds,
+      authorizationFingerprint: this.getFingerprint(user, userDBWorkloads, assignedDashboards, deniedIds),
     };
+  }
+  /*-------------------------------------------------------------*/
+  //  getFingerprint()
+  /*-------------------------------------------------------------*/
+  private getFingerprint(
+    user: UserCredentialRecord,
+    workloads: UserDBWorkload[],
+    dashboards: AllowedDashboard[],
+    denials: string[],
+  ): string {
+    const sorted = <T>(items: T[], selector: (item: T) => string) =>
+      items.map(selector).sort();
+    return createHash('sha256').update(JSON.stringify({
+      clientId: user.clientId,
+      userType: user.userType,
+      username: user.username,
+      displayName: user.displayName,
+      workloads: sorted(workloads, (w) => `${w.id.toLowerCase()}:${w.is_parent}:${w.pageType}:${w.name}`),
+      dashboards: sorted(dashboards, (d) => `${d.id.toLowerCase()}:${d.associatedWorkloadId?.toLowerCase() ?? ''}:${d.name}:${d.pageType}`),
+      denials: denials.map((id) => id.toLowerCase()).sort(),
+    })).digest('hex');
   }
   /*-------------------------------------------------------------*/
   //  verifyPassword()
@@ -230,6 +374,7 @@ export class AuthService {
   /*-------------------------------------------------------------*/
   private async getAmppAllowedWorkloadIds(
     allowedWorkloads: AllowedWorkload[],
+    denied = new Set<string>(),
   ): Promise<string[]> {
     const allowedIds = new Set<string>();
 
@@ -237,11 +382,11 @@ export class AuthService {
       workloadId: string,
       knownChildIds?: string[],
     ): Promise<void> => {
-      if (allowedIds.has(workloadId)) {
+      if (allowedIds.has(workloadId.toLowerCase()) || denied.has(workloadId.toLowerCase())) {
         return;
       }
 
-      allowedIds.add(workloadId);
+      allowedIds.add(workloadId.toLowerCase());
 
       let childIds = knownChildIds;
 

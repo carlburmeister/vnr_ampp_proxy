@@ -1,4 +1,5 @@
-import { Fragment, useState } from 'react';
+import { useState } from 'react';
+import { UserManagementDialog } from './UserManagementDialog';
 
 import './UserHomePage.css';
 
@@ -23,6 +24,7 @@ import { getAmppUiLaunchTarget } from '../utils/workloadAmppUiHandlers';
 type UserHomePageProps = {
   session: SessionData;
   onLogout: () => void;
+  onPermissionsSaved: () => void;
 };
 
 type WorkloadLaunchTargetResolver = () =>
@@ -30,10 +32,12 @@ type WorkloadLaunchTargetResolver = () =>
   | WorkloadLaunchTarget
   | null;
 
-export function UserHomePage({ session, onLogout }: UserHomePageProps) 
+export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHomePageProps) 
 {  
   const workloads: AllowedWorkload[] = session.allowedWorkloads ?? [];
   const dashboards: AllowedDashboard[] = session.allowedDashboards ?? [];
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [managementOpen, setManagementOpen] = useState(false);
   const [expandedWorkloadIds, setExpandedWorkloadIds] = useState<string[]>([]);
   const [workloadActionError, setWorkloadActionError] = useState('');
   const [loadingWorkloadId, setLoadingWorkloadId] = useState('');
@@ -59,6 +63,9 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
   );
 
   const buttonWidth = `${longestNameLength + 4}ch`;
+  const hasStandaloneDashboards = dashboards.some(
+    (dashboard) => dashboard.associatedWorkloadId === null,
+  );
 
   /*-------------------------------------------------------------*/
   //  handleWorkloadClick()
@@ -75,14 +82,7 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
     setWorkloadActionError('');
 
     if (workload.is_parent === 1) {
-      setExpandedWorkloadIds((currentExpandedWorkloadIds) => (
-        currentExpandedWorkloadIds.includes(workload.id)
-          ? currentExpandedWorkloadIds.filter(
-              (workloadId) => workloadId !== workload.id,
-            )
-          : [...currentExpandedWorkloadIds, workload.id]
-      ));
-
+      toggleWorkloadExpanded(workload.id);
       return;
     }
 
@@ -117,6 +117,17 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
   }
 
   /*-------------------------------------------------------------*/
+  //  toggleWorkloadExpanded()
+  /*-------------------------------------------------------------*/
+  function toggleWorkloadExpanded(workloadId: string) {
+    setExpandedWorkloadIds((currentExpandedWorkloadIds) => (
+      currentExpandedWorkloadIds.includes(workloadId)
+        ? currentExpandedWorkloadIds.filter((id) => id !== workloadId)
+        : [...currentExpandedWorkloadIds, workloadId]
+    ));
+  }
+
+  /*-------------------------------------------------------------*/
   //  handleChildWorkloadClick()
   /*-------------------------------------------------------------*/
   function handleChildWorkloadClick(workload: ChildWorkload) {
@@ -135,8 +146,19 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
   function handleDashboardClick(dashboard: AllowedDashboard) {
     setWorkloadActionError('');
 
+    const proxyWorkloadId =
+      dashboard.associatedWorkloadId ??
+      workloads[0]?.child_workloads?.[0]?.id ??
+      workloads[0]?.id;
+    if (!proxyWorkloadId) {
+      setWorkloadActionError(
+        'An assigned workload is required to open a dashboard.',
+      );
+      return;
+    }
+
     const dashboardUrl =
-      `/api/ampp-proxy/ui/${encodeURIComponent(dashboard.associatedWorkloadId)}` +
+      `/api/ampp-proxy/ui/${encodeURIComponent(proxyWorkloadId)}` +
       `/cluster/systemdashboard/dashboard/${encodeURIComponent(dashboard.id)}`;
     const newTab = window.open(dashboardUrl, '_blank');
 
@@ -208,14 +230,16 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
   /*-------------------------------------------------------------*/
   //  renderDashboardButtons()
   /*-------------------------------------------------------------*/
-  function renderDashboardButtons(workloadId: string) {
+  function renderDashboardButtons(workloadId: string | null) {
     return dashboards
       .filter((dashboard) => dashboard.associatedWorkloadId === workloadId)
       .map((dashboard) => (
         <button
           key={dashboard.id}
           type="button"
-          className="workload-button child-workload-button"
+          className={workloadId === null
+            ? 'workload-button'
+            : 'workload-button child-workload-button'}
           style={{ width: buttonWidth }}
           data-dashboard-id={dashboard.id}
           data-associated-workload-id={dashboard.associatedWorkloadId}
@@ -235,11 +259,27 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
           <p>{session.user.username}</p>
         </div>
 
-        <button type="button" onClick={onLogout}>
-          Sign out
-        </button>
+        <div className="user-actions">
+          <button type="button" aria-expanded={actionsOpen} onClick={() => setActionsOpen(!actionsOpen)}>
+            Actions ▾
+          </button>
+          {actionsOpen && (
+            <div className="user-actions-menu">
+              {session.user.userType === 'admin' && (
+                <button type="button" onClick={() => { setManagementOpen(true); setActionsOpen(false); }}>
+                  User Management
+                </button>
+              )}
+              <button type="button" onClick={onLogout}>Sign Out</button>
+            </div>
+          )}
+        </div>
       </header>
 
+      {managementOpen && session.user.userType === 'admin' && (
+        <UserManagementDialog onClose={() => setManagementOpen(false)}
+          onPermissionsSaved={onPermissionsSaved} />
+      )}
       <section className="workloads-section">
         <h2>My Workloads</h2>
 
@@ -249,11 +289,13 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
           </p>
         )}
 
-        {workloads.length ? (
+        {workloads.length || hasStandaloneDashboards ? (
           <div className="workload-button-list">
             {workloads.map((workload: AllowedWorkload) => {
-              const isExpanded =
-                expandedWorkloadIds.includes(workload.id);
+              const isExpanded = expandedWorkloadIds.includes(workload.id);
+              const hasDashboards = dashboards.some(
+                (dashboard) => dashboard.associatedWorkloadId === workload.id,
+              );
               const childWorkloads = [
                 ...(workload.child_workloads ?? []),
               ].sort((firstWorkload, secondWorkload) =>
@@ -265,63 +307,108 @@ export function UserHomePage({ session, onLogout }: UserHomePageProps)
               );
 
               return (
-                <div
-                  key={workload.id}
-                  className="workload-group"
-                >
-                  <button
-                    type="button"
-                    className="workload-button"
-                    style={{ width: buttonWidth }}
-                    data-workload-id={workload.id}
-                    data-application-name={workload.applicationName}
-                    disabled={loadingWorkloadId === workload.id}
-                    onClick={() => handleWorkloadClick(workload)}
-                  >
-                    {loadingWorkloadId === workload.id
-                      ? 'Loading...'
-                      : workload.name}
-                  </button>
+                <div key={workload.id} className="workload-group">
+                  <div className="workload-selector">
+                    <button
+                      type="button"
+                      className="workload-button"
+                      style={{ width: buttonWidth }}
+                      data-workload-id={workload.id}
+                      data-application-name={workload.applicationName}
+                      disabled={loadingWorkloadId === workload.id}
+                      aria-expanded={workload.is_parent === 1
+                        ? isExpanded
+                        : undefined}
+                      onClick={() => handleWorkloadClick(workload)}
+                    >
+                      {loadingWorkloadId === workload.id
+                        ? 'Loading...'
+                        : workload.name}
+                    </button>
 
-                  {renderDashboardButtons(workload.id)}
+                    {workload.is_parent === 0 && hasDashboards && (
+                      <button
+                        type="button"
+                        className="workload-expand-button"
+                        aria-label={`Toggle dashboards for ${workload.name}`}
+                        aria-expanded={isExpanded}
+                        onClick={() => toggleWorkloadExpanded(workload.id)}
+                      >
+                        {isExpanded ? '▾' : '▸'}
+                      </button>
+                    )}
+                  </div>
 
-                  {workload.is_parent === 1 && isExpanded && (
+                  {isExpanded && (workload.is_parent === 1 || hasDashboards) && (
                     <div className="child-workload-button-list">
-                      {childWorkloads.length ? (
-                        childWorkloads.map(
-                          (childWorkload: ChildWorkload) => (
-                            <Fragment key={childWorkload.id}>
-                              <button
-                                type="button"
-                                className="workload-button child-workload-button"
-                                style={{ width: buttonWidth }}
-                                data-application-name={
-                                  childWorkload.applicationName
-                                }
-                                //onClick={() => handleChildWorkloadClick(childWorkload)}
-                                onClick={() =>
-                                  handleChildWorkloadClick(
-                                    childWorkload,
-                                  )
-                                }
-                              >
-                                {childWorkload.name}
-                              </button>
+                      {renderDashboardButtons(workload.id)}
+                      {workload.is_parent === 1 && (
+                        childWorkloads.length ? (
+                          childWorkloads.map((childWorkload: ChildWorkload) => {
+                            const isChildExpanded = expandedWorkloadIds.includes(
+                              childWorkload.id,
+                            );
+                            const hasChildDashboards = dashboards.some(
+                              (dashboard) =>
+                                dashboard.associatedWorkloadId === childWorkload.id,
+                            );
 
-                              {renderDashboardButtons(childWorkload.id)}
-                            </Fragment>
-                          ),
-                        )
-                      ) : (
-                        <p className="child-workload-empty-message">
-                          No child workloads found.
-                        </p>
+                            return (
+                              <div
+                                key={childWorkload.id}
+                                className="workload-group"
+                              >
+                                <div className="workload-selector">
+                                  <button
+                                    type="button"
+                                    className="workload-button child-workload-button"
+                                    style={{ width: buttonWidth }}
+                                    data-application-name={
+                                      childWorkload.applicationName
+                                    }
+                                    //onClick={() => handleChildWorkloadClick(childWorkload)}
+                                    onClick={() =>
+                                      handleChildWorkloadClick(childWorkload)
+                                    }
+                                  >
+                                    {childWorkload.name}
+                                  </button>
+                                  {hasChildDashboards && (
+                                    <button
+                                      type="button"
+                                      className="workload-expand-button"
+                                      aria-label={
+                                        `Toggle dashboards for ${childWorkload.name}`
+                                      }
+                                      aria-expanded={isChildExpanded}
+                                      onClick={() =>
+                                        toggleWorkloadExpanded(childWorkload.id)
+                                      }
+                                    >
+                                      {isChildExpanded ? '▾' : '▸'}
+                                    </button>
+                                  )}
+                                </div>
+                                {hasChildDashboards && isChildExpanded && (
+                                  <div className="child-workload-button-list">
+                                    {renderDashboardButtons(childWorkload.id)}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        ) : !hasDashboards ? (
+                          <p className="child-workload-empty-message">
+                            No child workloads found.
+                          </p>
+                        ) : null
                       )}
                     </div>
                   )}
                 </div>
               );
             })}
+            {renderDashboardButtons(null)}
           </div>
         ) : (
           <p>No workloads assigned.</p>
