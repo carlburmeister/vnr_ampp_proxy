@@ -27,6 +27,7 @@ export type AmppDashboardMatrixAccess = Record<
       string,
       Record<string, AmppDashboardMatrixReferences>
     >;
+    dashboardNodeIds?: Record<string, string[]>;
     producerIds?: string[];
     consumerIds?: string[];
   }

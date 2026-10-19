@@ -3,6 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import type { SessionData } from 'express-session';
 
 import type { AmppCookieHttpResponse } from './ampp-cookie-http.service';
+import {
+  getDashboardResourceIds,
+  ICE_DASHBOARD_REFERENCE,
+} from './ampp-dashboard-resources';
 
 const MATRIX_RESPONSE_KEYS: Record<string, string> = {
   '/cluster/matrix/api/v1/producers': 'producers',
@@ -80,7 +84,7 @@ export class AmppMatrixFilterService {
     }
 
     if (MATRIX_NOTIFICATION_PATH.test(target.pathname)) {
-      return this.filterNotificationResponse(session, response);
+      return this.filterNotificationResponse(session, workloadId, response);
     }
 
     return response;
@@ -88,6 +92,7 @@ export class AmppMatrixFilterService {
 
   filterWebSocketMessage(
     session: SessionData,
+    workloadId: string,
     data: Buffer,
   ): Buffer | undefined {
     if (!data.toString('utf8').toLowerCase().includes(MATRIX_TOPIC_PREFIX)) {
@@ -103,7 +108,7 @@ export class AmppMatrixFilterService {
     }
 
     const allowedMessages = messages.filter((message) =>
-      this.isAllowedHubMessage(session, message),
+      this.isAllowedHubMessage(session, workloadId, message),
     );
 
     if (!allowedMessages.length) {
@@ -565,6 +570,7 @@ export class AmppMatrixFilterService {
 
   private filterNotificationResponse(
     session: SessionData,
+    workloadId: string,
     response: AmppCookieHttpResponse,
   ): AmppCookieHttpResponse {
     if (response.status < 200 || response.status >= 300) {
@@ -607,7 +613,9 @@ export class AmppMatrixFilterService {
         return [];
       }
 
-      const result = this.filterMatrixNotification(session, topic, content);
+      const result = this.filterMatrixNotification(
+        session, workloadId, topic, content,
+      );
 
       return result
         ? [
@@ -622,7 +630,11 @@ export class AmppMatrixFilterService {
     return this.replaceJsonBody(response, filtered);
   }
 
-  private isAllowedHubMessage(session: SessionData, message: Buffer): boolean {
+  private isAllowedHubMessage(
+    session: SessionData,
+    workloadId: string,
+    message: Buffer,
+  ): boolean {
     const strings: string[] = [];
 
     try {
@@ -653,7 +665,9 @@ export class AmppMatrixFilterService {
           continue;
         }
 
-        const result = this.filterMatrixNotification(session, topic, content);
+        const result = this.filterMatrixNotification(
+          session, workloadId, topic, content,
+        );
         return !!result?.unchanged;
       }
 
@@ -663,16 +677,21 @@ export class AmppMatrixFilterService {
 
   private filterMatrixNotification(
     session: SessionData,
+    workloadId: string,
     topic: string,
     content: Record<string, unknown>,
   ): MatrixNotificationResult | undefined {
     const normalizedTopic = topic.toLowerCase();
     const allowedWorkloadIds = this.getAllowedWorkloadIds(session);
-    const allowedFabricIds = this.getAllowedFabricIds(session);
+    const allowedFabricIds = new Set([
+      ...this.getAllowedFabricIds(session),
+      ...getDashboardResourceIds(session, workloadId, 'fabric'),
+    ]);
 
     if (normalizedTopic.startsWith('gv.cluster.matrix.producer.')) {
       return this.filterEntityNotification(
         session,
+        workloadId,
         content,
         'producer',
         allowedWorkloadIds,
@@ -683,6 +702,7 @@ export class AmppMatrixFilterService {
     if (normalizedTopic.startsWith('gv.cluster.matrix.consumer.')) {
       return this.filterEntityNotification(
         session,
+        workloadId,
         content,
         'consumer',
         allowedWorkloadIds,
@@ -704,8 +724,12 @@ export class AmppMatrixFilterService {
     }
 
     const fabricAccess = this.getFabricAccess(session, fabricId);
-    const producerIds = this.getIdSet(fabricAccess.producerIds);
-    const consumerIds = this.getIdSet(fabricAccess.consumerIds);
+    const producerIds = this.getVisibleIds(
+      session, workloadId, 'producerIds', fabricAccess.producerIds,
+    );
+    const consumerIds = this.getVisibleIds(
+      session, workloadId, 'consumerIds', fabricAccess.consumerIds,
+    );
 
     if (event === 'routemade') {
       const sourceId = content.sourceId;
@@ -727,6 +751,7 @@ export class AmppMatrixFilterService {
     if (event === 'flowschanged') {
       return this.filterEntityNotification(
         session,
+        workloadId,
         content,
         'producer',
         allowedWorkloadIds,
@@ -740,8 +765,14 @@ export class AmppMatrixFilterService {
     if (
       !producer ||
       !consumer ||
-      !this.isAllowedEntity(producer, allowedWorkloadIds, allowedFabricIds) ||
-      !this.isAllowedEntity(consumer, allowedWorkloadIds, allowedFabricIds)
+      !(
+        this.isAllowedEntity(producer, allowedWorkloadIds, allowedFabricIds) ||
+        this.isDashboardEntityAllowed(session, workloadId, producer, 'producer')
+      ) ||
+      !(
+        this.isAllowedEntity(consumer, allowedWorkloadIds, allowedFabricIds) ||
+        this.isDashboardEntityAllowed(session, workloadId, consumer, 'consumer')
+      )
     ) {
       return undefined;
     }
@@ -750,24 +781,31 @@ export class AmppMatrixFilterService {
     const consumerId = consumer.id;
 
     if (typeof producerId === 'string') {
-      this.addId(fabricAccess.producerIds ??= [], producerId);
-      if (typeof producer.name === 'string') {
-        (fabricAccess.producerNames ??= {})[producerId.toLowerCase()] =
-          producer.name;
+      if (this.isAllowedEntity(producer, allowedWorkloadIds, allowedFabricIds)) {
+        this.addId(fabricAccess.producerIds ??= [], producerId);
+        if (typeof producer.name === 'string') {
+          (fabricAccess.producerNames ??= {})[producerId.toLowerCase()] = producer.name;
+        }
+      } else {
+        this.addDashboardEntityId(session, workloadId, 'producerIds', producer);
       }
     }
 
     if (typeof consumerId === 'string') {
-      this.addId(fabricAccess.consumerIds ??= [], consumerId);
+      if (this.isAllowedEntity(consumer, allowedWorkloadIds, allowedFabricIds)) {
+        this.addId(fabricAccess.consumerIds ??= [], consumerId);
+      } else {
+        this.addDashboardEntityId(session, workloadId, 'consumerIds', consumer);
+      }
     }
 
     const filteredProducer = this.filterProducerRelations(
       producer,
-      this.getIdSet(fabricAccess.consumerIds),
+      consumerIds,
     );
     const filteredConsumer = this.filterConsumerRelations(
       consumer,
-      this.getIdSet(fabricAccess.producerIds),
+      producerIds,
     );
 
     return {
@@ -782,6 +820,7 @@ export class AmppMatrixFilterService {
 
   private filterEntityNotification(
     session: SessionData,
+    workloadId: string,
     content: Record<string, unknown>,
     entityKey: 'producer' | 'consumer',
     allowedWorkloadIds: Set<string>,
@@ -791,7 +830,8 @@ export class AmppMatrixFilterService {
 
     if (
       !entity ||
-      !this.isAllowedEntity(entity, allowedWorkloadIds, allowedFabricIds)
+      !(this.isAllowedEntity(entity, allowedWorkloadIds, allowedFabricIds) ||
+        this.isDashboardEntityAllowed(session, workloadId, entity, entityKey))
     ) {
       return undefined;
     }
@@ -803,23 +843,33 @@ export class AmppMatrixFilterService {
     }
 
     const fabricAccess = this.getFabricAccess(session, fabricId.toLowerCase());
+    const baseAllowed = this.isAllowedEntity(
+      entity, allowedWorkloadIds, allowedFabricIds,
+    );
     const filtered =
       entityKey === 'producer'
         ? this.filterProducerRelations(
             entity,
-            this.getIdSet(fabricAccess.consumerIds),
+            this.getVisibleIds(
+              session, workloadId, 'consumerIds', fabricAccess.consumerIds,
+            ),
           )
         : this.filterConsumerRelations(
             entity,
-            this.getIdSet(fabricAccess.producerIds),
+            this.getVisibleIds(
+              session, workloadId, 'producerIds', fabricAccess.producerIds,
+            ),
           );
     const id = entity.id;
     const action =
       typeof content.action === 'string' ? content.action.toLowerCase() : '';
-    const ids =
-      entityKey === 'producer'
+    const ids = baseAllowed
+      ? entityKey === 'producer'
         ? (fabricAccess.producerIds ??= [])
-        : (fabricAccess.consumerIds ??= []);
+        : (fabricAccess.consumerIds ??= [])
+      : (session.amppDashboardMatrixAccess?.[workloadId.toLowerCase()]?.[
+          entityKey === 'producer' ? 'producerIds' : 'consumerIds'
+        ] ?? []);
 
     if (typeof id === 'string') {
       if (['deleted', 'removed'].includes(action)) {
@@ -828,8 +878,21 @@ export class AmppMatrixFilterService {
           delete fabricAccess.producerNames?.[id.toLowerCase()];
         }
       } else {
-        this.addId(ids, id);
-        if (entityKey === 'producer' && typeof entity.name === 'string') {
+        if (baseAllowed) {
+          this.addId(ids, id);
+        } else {
+          this.addDashboardEntityId(
+            session,
+            workloadId,
+            entityKey === 'producer' ? 'producerIds' : 'consumerIds',
+            entity,
+          );
+        }
+        if (
+          baseAllowed &&
+          entityKey === 'producer' &&
+          typeof entity.name === 'string'
+        ) {
           (fabricAccess.producerNames ??= {})[id.toLowerCase()] = entity.name;
         }
       }
@@ -916,28 +979,36 @@ export class AmppMatrixFilterService {
     entity: Record<string, unknown>,
     entityKey: 'producer' | 'consumer',
   ): boolean {
-    const scope =
-      session.amppDashboardMatrixAccess?.[workloadId.toLowerCase()];
+    const normalizedWorkloadId = workloadId.toLowerCase();
+    const scope = session.amppDashboardMatrixAccess?.[normalizedWorkloadId];
     const fabricId = entity.fabricId;
 
     if (!scope || typeof fabricId !== 'string') {
       return false;
     }
 
-    const normalizedFabricId = fabricId.toLowerCase();
     const entityWorkloadId = entity.workloadId;
     const name = entity.name;
+    const key = entityKey === 'producer' ? 'producerNames' : 'consumerNames';
+    const allowedDashboardIds = new Set(
+      (session.allowedDashboardIds ?? []).map((id) => id.toLowerCase()),
+    );
 
-    return Object.values(scope.dashboards ?? {}).some((dashboard) => {
-      const references = dashboard[normalizedFabricId];
-
-      if (!references) {
+    return (session.allowedDashboards ?? []).some((dashboard) => {
+      const dashboardId = dashboard.id.toLowerCase();
+      if (
+        !allowedDashboardIds.has(dashboardId) ||
+        (dashboard.associatedWorkloadId !== null &&
+          dashboard.associatedWorkloadId.toLowerCase() !== normalizedWorkloadId)
+      ) {
         return false;
       }
 
+      const references =
+        scope.dashboards?.[dashboardId]?.[fabricId.toLowerCase()];
       if (
         typeof entityWorkloadId === 'string' &&
-        (references.workloadIds ?? []).some(
+        (references?.workloadIds ?? []).some(
           (id) => id.toLowerCase() === entityWorkloadId.toLowerCase(),
         )
       ) {
@@ -948,12 +1019,15 @@ export class AmppMatrixFilterService {
         return false;
       }
 
-      const names =
-        entityKey === 'producer'
-          ? references.producerNames
-          : references.consumerNames;
+      const iceNames =
+        entity.type === 'Ice'
+          ? scope.dashboards?.[dashboardId]?.[ICE_DASHBOARD_REFERENCE]?.[key]
+          : undefined;
 
-      return (names ?? []).includes(name);
+      return (
+        (references?.[key] ?? []).includes(name) ||
+        (iceNames ?? []).includes(name)
+      );
     });
   }
 

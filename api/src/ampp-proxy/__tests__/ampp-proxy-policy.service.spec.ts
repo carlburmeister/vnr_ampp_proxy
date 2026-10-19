@@ -160,6 +160,64 @@ describe('AmppProxyPolicyService', () => {
       ),
     ).toBe('/notifications/api/v1/mailbox');
   });
+  it('grants only dashboard-referenced node and fabric reads after configuration capture', () => {
+    const dashboardNode = '551e9fe2-b2d2-4e59-b725-0fa283f3b170';
+    const dashboardFabric = 'ec449300-edb3-41ce-96ec-96a13bdfdcdb';
+    const otherNode = 'f4aeba94-fe1d-4cd5-b5f1-387d33b0ea98';
+    const nodePath = `/cluster/state/api/v2/node/${dashboardNode}`;
+    const fabricPath = `/cluster/matrix/api/v1/producers?fabricId=${dashboardFabric}&type=Fabric`;
+
+    expect(() => service.assertApiAccess(session, workloadId, 'GET', nodePath))
+      .toThrow(ForbiddenException);
+    expect(() => service.assertApiAccess(session, workloadId, 'GET', fabricPath))
+      .toThrow(ForbiddenException);
+
+    session.amppDashboardMatrixAccess = {
+      [workloadId]: {
+        dashboards: { [dashboardId]: { [dashboardFabric]: {} } },
+        dashboardNodeIds: { [dashboardId]: [dashboardNode] },
+      },
+    };
+
+    expect(service.assertApiAccess(session, workloadId, 'GET', nodePath)).toBe(nodePath);
+    expect(service.assertApiAccess(session, workloadId, 'GET', fabricPath)).toBe(fabricPath);
+    expect(() => service.assertApiAccess(session, workloadId, 'GET',
+      `/cluster/state/api/v2/node/${otherNode}`)).toThrow(ForbiddenException);
+    expect(() => service.assertApiAccess(session, secondWorkloadId, 'GET', nodePath))
+      .toThrow(ForbiddenException);
+    expect(() => service.assertApiAccess(session, secondWorkloadId, 'GET', fabricPath))
+      .toThrow(ForbiddenException);
+    expect(() => service.assertApiAccess(session, workloadId, 'POST', nodePath))
+      .toThrow(ForbiddenException);
+    expect(() => service.assertApiAccess(session, workloadId, 'PUT', fabricPath))
+      .toThrow(ForbiddenException);
+
+    session.allowedDashboardIds = [];
+    expect(() => service.assertApiAccess(session, workloadId, 'GET', nodePath))
+      .toThrow(ForbiddenException);
+  });
+
+  it('permits node notifications only for dashboard-referenced nodes', () => {
+    const nodeId = '551e9fe2-b2d2-4e59-b725-0fa283f3b170';
+    const otherNode = 'f4aeba94-fe1d-4cd5-b5f1-387d33b0ea98';
+    const topic = (id: string) =>
+      `/notifications/api/v1/mailbox/dashboard-mailbox/subscribe/gv.cluster.node.${id}.%23`;
+    session.amppNotificationMailboxIds = ['dashboard-mailbox'];
+    session.amppDashboardMatrixAccess = {
+      [workloadId]: {
+        dashboards: { [dashboardId]: {} },
+        dashboardNodeIds: { [dashboardId]: [nodeId] },
+      },
+    };
+
+    expect(service.assertApiAccess(session, workloadId, 'POST', topic(nodeId)))
+      .toBe(topic(nodeId));
+    expect(() => service.assertApiAccess(session, workloadId, 'POST', topic(otherNode)))
+      .toThrow(ForbiddenException);
+    expect(() => service.assertApiAccess(session, secondWorkloadId, 'POST', topic(nodeId)))
+      .toThrow(ForbiddenException);
+  });
+
   it('allows standalone dashboards from an authorized workload scope', () => {
     session.allowedDashboards = [
       {

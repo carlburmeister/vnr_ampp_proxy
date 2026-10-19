@@ -4,6 +4,10 @@ import type { SessionData } from 'express-session';
 
 import type { AmppDashboardMatrixReferences } from '../auth/types/session-data';
 import type { AmppCookieHttpResponse } from './ampp-cookie-http.service';
+import {
+  getDashboardResourceIds,
+  ICE_DASHBOARD_REFERENCE,
+} from './ampp-dashboard-resources';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -58,12 +62,12 @@ export class AmppDashboardFilterService {
         response,
         'nodes',
         'nodeId',
-        this.getAllowedNodeIds(session),
+        this.getAllowedNodeIds(session, workloadId),
       );
     }
 
     if (pathname === '/cluster/fabric/api/v1/fabrics') {
-      return this.filterFabrics(session, response);
+      return this.filterFabrics(session, workloadId, response);
     }
 
     if (pathname === '/cluster/snapshot/api/v1/snapshots') {
@@ -120,11 +124,11 @@ export class AmppDashboardFilterService {
     }
 
     if (pathname === '/hubmanager/api/v1/sites') {
-      return this.filterSites(session, response);
+      return this.filterSites(session, workloadId, response);
     }
 
     if (/^\/notifications\/api\/v1\/notifications\/[^/]+$/i.test(pathname)) {
-      return this.filterNotifications(session, response);
+      return this.filterNotifications(session, workloadId, response);
     }
 
     return response;
@@ -132,6 +136,7 @@ export class AmppDashboardFilterService {
 
   private filterFabrics(
     session: SessionData,
+    workloadId: string,
     response: AmppCookieHttpResponse,
   ): AmppCookieHttpResponse {
     const parsed = this.parseJsonObject(response);
@@ -141,8 +146,8 @@ export class AmppDashboardFilterService {
       throw new BadGatewayException('AMPP fabric response is missing fabrics');
     }
 
-    const allowedFabricIds = this.getAllowedFabricIds(session);
-    const allowedNodeIds = this.getAllowedNodeIds(session);
+    const allowedFabricIds = this.getAllowedFabricIds(session, workloadId);
+    const allowedNodeIds = this.getAllowedNodeIds(session, workloadId);
     const filtered = fabrics.flatMap((item) => {
       const wrapper = this.asObject(item);
       const fabric = this.asObject(wrapper?.fabric);
@@ -243,6 +248,7 @@ export class AmppDashboardFilterService {
 
   private filterSites(
     session: SessionData,
+    workloadId: string,
     response: AmppCookieHttpResponse,
   ): AmppCookieHttpResponse {
     const parsed = this.parseJsonObject(response);
@@ -252,7 +258,7 @@ export class AmppDashboardFilterService {
       throw new BadGatewayException('AMPP site response is missing sites');
     }
 
-    const allowedNodeIds = this.getAllowedNodeIds(session);
+    const allowedNodeIds = this.getAllowedNodeIds(session, workloadId);
     const filtered = sites.filter((site) =>
       this.containsAllowedId(site, allowedNodeIds),
     );
@@ -262,6 +268,7 @@ export class AmppDashboardFilterService {
 
   private filterNotifications(
     session: SessionData,
+    workloadId: string,
     response: AmppCookieHttpResponse,
   ): AmppCookieHttpResponse {
     const parsed = this.parseJson(response);
@@ -306,14 +313,18 @@ export class AmppDashboardFilterService {
           /^gv\.(?:cluster\.(?:node|nodestate)|config\.gv\.node)\.([0-9a-f-]{36})(?:\.|$)/i,
         );
         if (node) {
-          return this.getAllowedNodeIds(session).has(node[1].toLowerCase());
+          return this.getAllowedNodeIds(session, workloadId).has(
+            node[1].toLowerCase(),
+          );
         }
 
         const fabric = topic.match(
           /^gv\.cluster\.fabric\.([0-9a-f-]{36})(?:\.|$)/i,
         );
         if (fabric) {
-          return this.getAllowedFabricIds(session).has(fabric[1].toLowerCase());
+          return this.getAllowedFabricIds(session, workloadId).has(
+            fabric[1].toLowerCase(),
+          );
         }
 
         if (
@@ -551,6 +562,7 @@ export class AmppDashboardFilterService {
     }
 
     const references: Record<string, AmppDashboardMatrixReferences> = {};
+    const nodeIds = new Set<string>();
 
     const add = (
       fabricId: string,
@@ -582,7 +594,12 @@ export class AmppDashboardFilterService {
           ? object.fabricId
           : inheritedFabricId;
 
+      if (typeof object.nodeId === 'string' && UUID_PATTERN.test(object.nodeId)) {
+        nodeIds.add(object.nodeId.toLowerCase());
+      }
+
       if (fabricId) {
+        references[fabricId.toLowerCase()] ??= {};
         if (
           typeof object.workloadId === 'string' &&
           UUID_PATTERN.test(object.workloadId)
@@ -597,6 +614,14 @@ export class AmppDashboardFilterService {
         if (typeof object.consumerName === 'string' && object.consumerName) {
           add(fabricId, 'consumerNames', object.consumerName);
         }
+      } else {
+        if (typeof object.producerName === 'string' && object.producerName) {
+          add(ICE_DASHBOARD_REFERENCE, 'producerNames', object.producerName);
+        }
+
+        if (typeof object.consumerName === 'string' && object.consumerName) {
+          add(ICE_DASHBOARD_REFERENCE, 'consumerNames', object.consumerName);
+        }
       }
 
       Object.values(object).forEach((child) => inspect(child, fabricId));
@@ -607,6 +632,7 @@ export class AmppDashboardFilterService {
     const matrixAccess = (session.amppDashboardMatrixAccess ??= {});
     const scope = (matrixAccess[workloadId.toLowerCase()] ??= {});
     (scope.dashboards ??= {})[dashboardId.toLowerCase()] = references;
+    (scope.dashboardNodeIds ??= {})[dashboardId.toLowerCase()] = [...nodeIds];
     scope.producerIds = [];
     scope.consumerIds = [];
   }
@@ -629,28 +655,40 @@ export class AmppDashboardFilterService {
     );
   }
 
-  private getAllowedFabricIds(session: SessionData): Set<string> {
-    return new Set(
-      (session.allowedWorkloads ?? [])
+  private getAllowedFabricIds(
+    session: SessionData,
+    workloadId?: string,
+  ): Set<string> {
+    return new Set([
+      ...(session.allowedWorkloads ?? [])
         .flatMap((workload) => [
           workload.fabricId,
           ...(workload.child_workloads ?? []).map((child) => child.fabricId),
         ])
         .filter((id): id is string => Boolean(id))
         .map((id) => id.toLowerCase()),
-    );
+      ...(workloadId
+        ? getDashboardResourceIds(session, workloadId, 'fabric')
+        : []),
+    ]);
   }
 
-  private getAllowedNodeIds(session: SessionData): Set<string> {
-    return new Set(
-      (session.allowedWorkloads ?? [])
+  private getAllowedNodeIds(
+    session: SessionData,
+    workloadId?: string,
+  ): Set<string> {
+    return new Set([
+      ...(session.allowedWorkloads ?? [])
         .flatMap((workload) => [
           workload.nodeId,
           ...(workload.child_workloads ?? []).map((child) => child.nodeId),
         ])
         .filter((id): id is string => Boolean(id))
         .map((id) => id.toLowerCase()),
-    );
+      ...(workloadId
+        ? getDashboardResourceIds(session, workloadId, 'node')
+        : []),
+    ]);
   }
 
   private parseJson(response: AmppCookieHttpResponse): unknown {

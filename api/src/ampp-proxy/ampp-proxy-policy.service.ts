@@ -7,6 +7,7 @@ import type { SessionData } from 'express-session';
 
 import type { AllowedWorkload } from '../ampp/types/workload_types';
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
+import { getDashboardResourceIds } from './ampp-dashboard-resources';
 
 const API_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const GLOBAL_BOOTSTRAP_GET_PATHS = new Set([
@@ -200,6 +201,7 @@ export class AmppProxyPolicyService {
         allowedWorkloads,
         body,
         this.hasDashboardScope(session, workloadId),
+        workloadId,
       );
     }
 
@@ -209,7 +211,10 @@ export class AmppProxyPolicyService {
       pathname.startsWith('/mocha/application/') ||
       pathname === '/discovery/api/v1/services'
     ) {
-      return this.isAllowedWorkloadRequest(method, target, allowedWorkloadIds);
+      return (
+        this.isAllowedWorkloadRequest(method, target, allowedWorkloadIds) ||
+        this.isAllowedDashboardNodeRequest(method, target, session, workloadId)
+      );
     }
 
     // Historical note:
@@ -317,6 +322,26 @@ export class AmppProxyPolicyService {
     return false;
   }
 
+  private isAllowedDashboardNodeRequest(
+    method: string,
+    target: URL,
+    session: SessionData,
+    workloadId: string,
+  ): boolean {
+    const match = target.pathname.match(
+      /^\/cluster\/state\/api\/v2\/node\/([0-9a-f-]{36})\/?$/i,
+    );
+
+    return Boolean(
+      method === 'GET' &&
+        !target.search &&
+        match &&
+        getDashboardResourceIds(session, workloadId, 'node').has(
+          match[1].toLowerCase(),
+        ),
+    );
+  }
+
   private isAllowedMatrixRequest(
     method: string,
     target: URL,
@@ -324,6 +349,7 @@ export class AmppProxyPolicyService {
     allowedWorkloads: AllowedWorkload[],
     body: Buffer | undefined,
     dashboardScope: boolean,
+    workloadId: string,
   ): boolean {
     const pathname = target.pathname.replace(/\/+$/, '').toLowerCase();
 
@@ -332,9 +358,12 @@ export class AmppProxyPolicyService {
 
       if (
         fabricIds.length === 1 &&
-        this.getAllowedFabricIds(allowedWorkloads).has(
+        (this.getAllowedFabricIds(allowedWorkloads).has(
           fabricIds[0].toLowerCase(),
-        )
+        ) ||
+          getDashboardResourceIds(session, workloadId, 'fabric').has(
+            fabricIds[0].toLowerCase(),
+          ))
       ) {
         return true;
       }
@@ -438,8 +467,14 @@ export class AmppProxyPolicyService {
         this.isAllowedNotificationTopic(
           subscriptionMatch[3],
           allowedWorkloadIds,
-          this.getAllowedFabricIds(session.allowedWorkloads ?? []),
-          this.getAllowedNodeIds(session.allowedWorkloads ?? []),
+          new Set([
+            ...this.getAllowedFabricIds(session.allowedWorkloads ?? []),
+            ...getDashboardResourceIds(session, workloadId, 'fabric'),
+          ]),
+          new Set([
+            ...this.getAllowedNodeIds(session.allowedWorkloads ?? []),
+            ...getDashboardResourceIds(session, workloadId, 'node'),
+          ]),
           dashboardScope,
         ),
     );

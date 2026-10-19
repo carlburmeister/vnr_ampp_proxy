@@ -134,7 +134,12 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     void this.authorizeUpgrade(request, parsedRequest)
       .then((allowedPath) => {
         this.browserServer.handleUpgrade(request, socket, head, (browser) => {
-          void this.connectUpstream(browser, request, allowedPath).catch(
+          void this.connectUpstream(
+            browser,
+            request,
+            parsedRequest.workloadId,
+            allowedPath,
+          ).catch(
             (error) => {
               amppProxySessionDebugWarn(
                 `AMPP WebSocket setup failed path=${allowedPath}: ${
@@ -178,6 +183,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
   private async connectUpstream(
     browser: WebSocketConnection,
     request: UpgradeRequest,
+    workloadId: string,
     upstreamPath: string,
   ): Promise<void> {
     const pendingMessages: PendingMessage[] = [];
@@ -195,7 +201,9 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
           request.session = latest;
           await this.auth.refreshSessionAuthorization(latest);
           this.policy.assertWebSocketAccess(
-            latest, this.parseProxyRequest(request.url)?.workloadId ?? '', upstreamPath,
+            latest,
+            workloadId,
+            upstreamPath,
           );
         })
         .catch(() => browser.close(1008, 'Permission revoked'));
@@ -312,6 +320,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
         isBinary && request.session
           ? this.matrixFilter.filterWebSocketMessage(
               request.session,
+              workloadId,
               this.toBuffer(data),
             )
           : data;

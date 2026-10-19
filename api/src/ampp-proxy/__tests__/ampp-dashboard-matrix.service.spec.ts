@@ -95,6 +95,47 @@ describe('dashboard Matrix visibility', () => {
     });
   });
 
+  it('captures node and fabric IDs only from the authorized dashboard configuration', () => {
+    const referencedNode = '551e9fe2-b2d2-4e59-b725-0fa283f3b170';
+    const anotherFabric = 'ec449300-edb3-41ce-96ec-96a13bdfdcdb';
+
+    dashboardFilter.filterApiResponse(
+      session,
+      DASHBOARD_SCOPE_ID,
+      `/configuration/api/v1/configuration/gv/systemdashboards/dashboards/${DASHBOARD_ID}`,
+      jsonResponse({
+        value: JSON.stringify({
+          nodes: {
+            node: { config: { nodeId: referencedNode } },
+            matrix: { config: { fabricId: anotherFabric } },
+          },
+        }),
+      }),
+    );
+
+    expect(session.amppDashboardMatrixAccess?.[DASHBOARD_SCOPE_ID]?.dashboardNodeIds?.[DASHBOARD_ID])
+      .toEqual([referencedNode]);
+    expect(session.amppDashboardMatrixAccess?.[DASHBOARD_SCOPE_ID]?.dashboards?.[DASHBOARD_ID])
+      .toHaveProperty(anotherFabric, {});
+
+    const nodeResponse = dashboardFilter.filterApiResponse(
+      session,
+      DASHBOARD_SCOPE_ID,
+      '/cluster/state/api/v2/nodes',
+      jsonResponse({ nodes: [{ nodeId: referencedNode }, { nodeId: UNRELATED_WORKLOAD_ID }] }),
+    );
+    expect(JSON.parse(nodeResponse.body.toString('utf8')).nodes)
+      .toEqual([{ nodeId: referencedNode }]);
+
+    const otherScopeResponse = dashboardFilter.filterApiResponse(
+      session,
+      OTHER_SCOPE_ID,
+      '/cluster/state/api/v2/nodes',
+      jsonResponse({ nodes: [{ nodeId: referencedNode }] }),
+    );
+    expect(JSON.parse(otherScopeResponse.body.toString('utf8')).nodes).toEqual([]);
+  });
+
   it('shows dashboard-only Matrix entities without adding them to write access', () => {
     session.amppDashboardMatrixAccess = {
       [DASHBOARD_SCOPE_ID]: {
@@ -175,6 +216,138 @@ describe('dashboard Matrix visibility', () => {
     expect(
       session.amppMatrixAccess?.[FABRIC_ID]?.consumerIds ?? [],
     ).not.toContain(DASHBOARD_CONSUMER_ID);
+  });
+
+  it('preserves only dashboard-referenced ICE sources and routing relationships', () => {
+    const iceProducerId = '8ae58255-a857-4857-9da1-63c10930da45';
+    const iceConsumerId = '2020ab64-ab37-4e55-b798-b2a44b5906fa';
+    const unrelatedProducerId = '48b62130-7538-4ee7-94d1-11aa68442566';
+
+    dashboardFilter.filterApiResponse(
+      session,
+      DASHBOARD_SCOPE_ID,
+      `/configuration/api/v1/configuration/gv/systemdashboards/dashboards/${DASHBOARD_ID}`,
+      jsonResponse({
+        value: JSON.stringify({
+          nodes: {
+            source: { config: { producerName: 'GBL - N2: GLB OUT 1' } },
+            destination: { config: { consumerName: 'GBL - GRID: GBL-IN-01' } },
+          },
+        }),
+      }),
+    );
+
+    const dashboardReferences = session.amppDashboardMatrixAccess?.[
+      DASHBOARD_SCOPE_ID
+    ]?.dashboards?.[DASHBOARD_ID];
+    expect(dashboardReferences?.['__ice__']).toEqual({
+      producerNames: ['GBL - N2: GLB OUT 1'],
+      consumerNames: ['GBL - GRID: GBL-IN-01'],
+    });
+
+    const producerItems = [
+      wrapped('producer', {
+        id: iceProducerId,
+        name: 'GBL - N2: GLB OUT 1',
+        type: 'Ice',
+        fabricId: FABRIC_ID,
+        workloadId: DASHBOARD_ONLY_WORKLOAD_ID,
+      }),
+      wrapped('producer', {
+        id: unrelatedProducerId,
+        name: 'Not on dashboard',
+        type: 'Ice',
+        fabricId: FABRIC_ID,
+        workloadId: UNRELATED_WORKLOAD_ID,
+      }),
+      wrapped('producer', {
+        id: '10581247-4b0f-4582-a5d1-ccf182c53ec0',
+        name: 'GBL - N2: GLB OUT 1',
+        type: 'Fabric',
+        fabricId: FABRIC_ID,
+        workloadId: UNRELATED_WORKLOAD_ID,
+      }),
+    ];
+    const producers = matrixFilter.filterApiResponse(
+      session,
+      DASHBOARD_SCOPE_ID,
+      '/cluster/matrix/api/v1/producers?type=Ice',
+      jsonResponse({ producers: producerItems }),
+    );
+    expect(JSON.parse(producers.body.toString('utf8')).producers).toEqual([
+      producerItems[0],
+    ]);
+    expect(matrixFilter.isProducerIdAllowed(session, iceProducerId)).toBe(false);
+
+    const consumers = matrixFilter.filterApiResponse(
+      session,
+      DASHBOARD_SCOPE_ID,
+      '/cluster/matrix/api/v1/consumers?type=Ice',
+      jsonResponse({ consumers: [
+        wrapped('consumer', {
+          id: iceConsumerId,
+          name: 'GBL - GRID: GBL-IN-01',
+          type: 'Ice',
+          fabricId: FABRIC_ID,
+          workloadId: DASHBOARD_ONLY_WORKLOAD_ID,
+          routedProducerId: iceProducerId,
+        }),
+      ] }),
+    );
+    expect(JSON.parse(consumers.body.toString('utf8')).consumers).toHaveLength(1);
+
+    const sources = matrixFilter.filterApiResponse(
+      session,
+      DASHBOARD_SCOPE_ID,
+      '/cluster/matrix/api/v1/routing/sources?type=Ice',
+      jsonResponse({ sources: [
+        { id: iceProducerId, destinationIds: [iceConsumerId] },
+        { id: unrelatedProducerId, destinationIds: [iceConsumerId] },
+      ] }),
+    );
+    expect(JSON.parse(sources.body.toString('utf8')).sources).toEqual([
+      { id: iceProducerId, destinationIds: [iceConsumerId] },
+    ]);
+
+    const destinations = matrixFilter.filterApiResponse(
+      session,
+      DASHBOARD_SCOPE_ID,
+      '/cluster/matrix/api/v1/routing/destinations?type=Ice',
+      jsonResponse({ destinations: [{ id: iceConsumerId, sourceId: iceProducerId }] }),
+    );
+    expect(JSON.parse(destinations.body.toString('utf8')).destinations).toEqual([
+      { id: iceConsumerId, sourceId: iceProducerId },
+    ]);
+
+    const notification = matrixFilter.filterApiResponse(
+      session,
+      DASHBOARD_SCOPE_ID,
+      '/notifications/api/v1/notifications/dashboard-mailbox',
+      jsonResponse([{
+        topic: `gv.cluster.matrix.producer.${iceProducerId}.updated`,
+        content: JSON.stringify({ producer: producerItems[0].producer }),
+      }]),
+    );
+    expect(JSON.parse(notification.body.toString('utf8'))).toHaveLength(1);
+
+    const routeNotification = matrixFilter.filterApiResponse(
+      session,
+      DASHBOARD_SCOPE_ID,
+      '/notifications/api/v1/notifications/dashboard-mailbox',
+      jsonResponse([{
+        topic: `gv.cluster.matrix.${FABRIC_ID}.routemade`,
+        content: JSON.stringify({ sourceId: iceProducerId, destinationId: iceConsumerId }),
+      }]),
+    );
+    expect(JSON.parse(routeNotification.body.toString('utf8'))).toHaveLength(1);
+
+    const unrelatedScope = matrixFilter.filterApiResponse(
+      session,
+      OTHER_SCOPE_ID,
+      '/cluster/matrix/api/v1/producers?type=Ice',
+      jsonResponse({ producers: producerItems }),
+    );
+    expect(JSON.parse(unrelatedScope.body.toString('utf8')).producers).toEqual([]);
   });
 
   it('does not apply dashboard-only Matrix visibility to another proxy scope', () => {

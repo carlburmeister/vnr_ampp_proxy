@@ -196,6 +196,27 @@ export class AmppProxySessionService {
         }
       }
 
+      if (!this.same(previous?.dashboardNodeIds, current.dashboardNodeIds)) {
+        const nodeIds = { ...(target.dashboardNodeIds ?? {}) };
+        const previousNodes = previous?.dashboardNodeIds ?? {};
+        const currentNodes = current.dashboardNodeIds ?? {};
+
+        for (const dashboardId of new Set([
+          ...Object.keys(previousNodes),
+          ...Object.keys(currentNodes),
+        ])) {
+          if (this.same(previousNodes[dashboardId], currentNodes[dashboardId])) {
+            continue;
+          }
+          if (!(dashboardId in currentNodes)) {
+            delete nodeIds[dashboardId];
+          } else {
+            nodeIds[dashboardId] = this.clone(currentNodes[dashboardId]);
+          }
+        }
+        target.dashboardNodeIds = nodeIds;
+      }
+
       if (!this.same(previous?.dashboards, current.dashboards)) {
         const dashboards = { ...(target.dashboards ?? {}) };
         const previousDashboards = previous?.dashboards ?? {};
