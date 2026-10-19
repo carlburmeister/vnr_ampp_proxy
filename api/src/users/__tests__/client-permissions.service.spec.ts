@@ -45,6 +45,22 @@ describe('ClientPermissionsService child workload listing', () => {
     expect(listChildWorkloads).toHaveBeenCalledWith('parent-uuid');
   });
 
+  it('hides AMV-restricted children from client administrators', async () => {
+    db.execute.mockImplementationOnce(async () => [[{ client_id: 2, user_type: 'admin' }]])
+      .mockImplementationOnce(async () => [[{ row_id: 7, workload_id: 'parent-uuid', is_parent: 1 }]])
+      .mockImplementationOnce(async () => [[{ workload_id: 'CHILD-2' }]]);
+    listChildWorkloads.mockResolvedValue({ workloads: [
+      { workload: { id: 'child-2', name: 'Blocked' } },
+      { workload: { id: 'child-10', name: 'Allowed' } },
+    ] });
+    expect(await service.listChildWorkloads(actor, 7)).toEqual([
+      { id: 'child-10', name: 'Allowed', parentId: 'parent-uuid' },
+    ]);
+    expect(db.execute).toHaveBeenCalledWith(
+      expect.stringContaining('client_workload_denials'), [2],
+    );
+  });
+
   it('rejects workloads not owned by the client', async () => {
     db.execute.mockImplementationOnce(async () => [[{ client_id: 2, user_type: 'admin' }]])
       .mockImplementationOnce(async () => [[]]);

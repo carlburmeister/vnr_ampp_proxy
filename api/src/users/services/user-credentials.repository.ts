@@ -172,6 +172,10 @@ export class UserCredentialsRepository implements OnModuleDestroy {
        JOIN ampp_dashboards d ON d.row_id = p.ampp_dashboard_id
                               AND d.client_id = u.client_id
        WHERE p.user_id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM client_dashboard_denials x
+           WHERE x.client_id = u.client_id AND x.dashboard_id = LOWER(d.dashboard_id)
+         )
        ORDER BY d.row_id ASC`,
       [userId],
     );
@@ -190,9 +194,12 @@ export class UserCredentialsRepository implements OnModuleDestroy {
     const [rows] = await this.pool.execute<(RowDataPacket & { workload_id: string })[]>(
       `SELECT d.workload_id
        FROM client_user_workload_denials d
-       JOIN client_users u ON u.row_id = d.user_id
-       WHERE d.user_id = ? ORDER BY d.workload_id`,
-      [userId],
+       WHERE d.user_id = ?
+       UNION
+       SELECT x.workload_id FROM client_workload_denials x
+       JOIN client_users u ON u.client_id = x.client_id
+       WHERE u.row_id = ?`,
+      [userId, userId],
     );
     return rows.map((row) => row.workload_id.toLowerCase());
   }

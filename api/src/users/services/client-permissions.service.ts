@@ -59,13 +59,22 @@ export class ClientPermissionsService {
         db.execute<(RowDataPacket & { workloadId: string; isParent: number; name: string })[]>(
           `SELECT row_id AS id, workload_id AS workloadId, name,
                   is_parent AS isParent, page_type AS pageType
-           FROM ampp_workloads WHERE client_id=? ORDER BY is_parent DESC, name`,
+           FROM ampp_workloads w WHERE client_id=?
+             AND NOT EXISTS (SELECT 1 FROM client_workload_denials x
+               WHERE x.client_id=w.client_id AND x.workload_id=LOWER(w.workload_id))
+           ORDER BY is_parent DESC, name`,
           [actor.clientId],
         ),
         db.execute<RowDataPacket[]>(
           `SELECT row_id AS id, dashboard_id AS dashboardId, name,
                   associated_workload_id AS associatedWorkloadId, page_type AS pageType
-           FROM ampp_dashboards WHERE client_id=? ORDER BY name`,
+           FROM ampp_dashboards d WHERE client_id=?
+             AND NOT EXISTS (SELECT 1 FROM client_dashboard_denials x
+               WHERE x.client_id=d.client_id AND x.dashboard_id=LOWER(d.dashboard_id))
+             AND (d.associated_workload_id IS NULL OR NOT EXISTS (
+               SELECT 1 FROM client_workload_denials x
+               WHERE x.client_id=d.client_id AND x.workload_id=LOWER(d.associated_workload_id)))
+           ORDER BY name`,
           [actor.clientId],
         ),
       ]);
@@ -99,15 +108,26 @@ export class ClientPermissionsService {
         db.execute<(RowDataPacket & { id: number })[]>(
           `SELECT p.ampp_workload_id AS id FROM client_user_workload_permissions p
            JOIN ampp_workloads w ON w.row_id=p.ampp_workload_id
-           WHERE p.user_id=? AND w.client_id=?`, [userId, actor.clientId],
+           WHERE p.user_id=? AND w.client_id=?
+             AND NOT EXISTS (SELECT 1 FROM client_workload_denials x
+               WHERE x.client_id=w.client_id AND x.workload_id=LOWER(w.workload_id))`, [userId, actor.clientId],
         ),
         db.execute<(RowDataPacket & { id: number })[]>(
           `SELECT p.ampp_dashboard_id AS id FROM client_user_dashboard_permissions p
            JOIN ampp_dashboards d ON d.row_id=p.ampp_dashboard_id
-           WHERE p.user_id=? AND d.client_id=?`, [userId, actor.clientId],
+           WHERE p.user_id=? AND d.client_id=?
+             AND NOT EXISTS (SELECT 1 FROM client_dashboard_denials x
+               WHERE x.client_id=d.client_id AND x.dashboard_id=LOWER(d.dashboard_id))
+             AND (d.associated_workload_id IS NULL OR NOT EXISTS (
+               SELECT 1 FROM client_workload_denials x
+               WHERE x.client_id=d.client_id AND x.workload_id=LOWER(d.associated_workload_id)))`, [userId, actor.clientId],
         ),
         db.execute<(RowDataPacket & { workload_id: string })[]>(
-          'SELECT workload_id FROM client_user_workload_denials WHERE user_id=?', [userId],
+          `SELECT d.workload_id FROM client_user_workload_denials d
+           JOIN client_users u ON u.row_id=d.user_id
+           WHERE d.user_id=? AND NOT EXISTS (
+             SELECT 1 FROM client_workload_denials x
+             WHERE x.client_id=u.client_id AND x.workload_id=d.workload_id)`, [userId],
         ),
       ]);
       return {
@@ -115,6 +135,15 @@ export class ClientPermissionsService {
         dashboardIds: dashboards.map((row) => row.id),
         deniedChildWorkloadIds: denials.map((row) => row.workload_id),
       };
+    });
+  }
+
+  private async getClientWorkloadDenials(clientId: number): Promise<Set<string>> {
+    return this.users.withConnection(async (db) => {
+      const [rows] = await db.execute<(RowDataPacket & { workload_id: string })[]>(
+        'SELECT workload_id FROM client_workload_denials WHERE client_id=?', [clientId],
+      );
+      return new Set(rows.map((row) => row.workload_id.toLowerCase()));
     });
   }
 
@@ -154,15 +183,22 @@ export class ClientPermissionsService {
     const parentId = await this.users.withConnection(async (db) => {
       await this.assertAdmin(db, actor);
       const [rows] = await db.execute<WorkloadRow[]>(
-        'SELECT row_id, workload_id, is_parent FROM ampp_workloads WHERE row_id=? AND client_id=?',
+        `SELECT row_id, workload_id, is_parent FROM ampp_workloads w
+         WHERE row_id=? AND client_id=? AND NOT EXISTS (
+           SELECT 1 FROM client_workload_denials x
+           WHERE x.client_id=w.client_id AND x.workload_id=LOWER(w.workload_id))`,
         [workloadRowId, actor.clientId],
       );
       if (!rows[0]?.is_parent) throw new ForbiddenException('Parent workload not available for your client');
       return rows[0].workload_id;
     });
     const response = await this.ampp.listChildWorkloads(parentId) as unknown as AmppChildWorkloadsResponse;
+    const denied = await this.getClientWorkloadDenials(actor.clientId);
+    if (denied.has(parentId.toLowerCase())) {
+      throw new ForbiddenException('Parent workload is restricted by AMV');
+    }
     return (response?.workloads ?? [])
-      .filter((item) => item.workload?.id)
+      .filter((item) => item.workload?.id && !denied.has(item.workload.id.toLowerCase()))
       .map((item) => ({
         id: item.workload.id.toLowerCase(),
         name: item.workload.name || item.workload.alias || item.workload.id,
@@ -220,6 +256,24 @@ export class ClientPermissionsService {
           workloads.some((row) => row.is_parent && row.workload_id === id))) {
           throw new BadRequestException('Parent assignments changed; retry');
         }
+        const [blockedWorkloads] = await db.execute<(RowDataPacket & { workload_id: string })[]>(
+          'SELECT workload_id FROM client_workload_denials WHERE client_id=?', [actor.clientId],
+        );
+        const blocked = new Set(blockedWorkloads.map((row) => row.workload_id.toLowerCase()));
+        if (workloads.some((row) => blocked.has(row.workload_id.toLowerCase())) ||
+            deniedIds.some((id) => blocked.has(id))) {
+          throw new BadRequestException('One or more workloads are restricted by AMV');
+        }
+        const [blockedDashboards] = await db.execute<(RowDataPacket & { dashboard_id: string; associated_workload_id: string | null })[]>(
+          `SELECT d.dashboard_id, d.associated_workload_id FROM ampp_dashboards d
+           WHERE d.client_id=? AND d.row_id IN (${dashboardIds.length ? dashboardIds.map(() => '?').join(',') : 'NULL'})
+             AND (EXISTS (SELECT 1 FROM client_dashboard_denials x
+               WHERE x.client_id=d.client_id AND x.dashboard_id=LOWER(d.dashboard_id))
+               OR EXISTS (SELECT 1 FROM client_workload_denials x
+               WHERE x.client_id=d.client_id AND x.workload_id=LOWER(d.associated_workload_id)))`,
+          [actor.clientId, ...dashboardIds],
+        );
+        if (blockedDashboards.length) throw new BadRequestException('One or more dashboards are restricted by AMV');
         await db.execute('DELETE FROM client_user_workload_permissions WHERE user_id=?', [userId]);
         await db.execute('DELETE FROM client_user_dashboard_permissions WHERE user_id=?', [userId]);
         await db.execute('DELETE FROM client_user_workload_denials WHERE user_id=?', [userId]);

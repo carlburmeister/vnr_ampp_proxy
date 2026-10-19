@@ -141,6 +141,7 @@ describe('UserCredentialsRepository', () => {
     ]);
 
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('d.client_id = u.client_id'), ['mock-user-001']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('client_dashboard_denials'), ['mock-user-001']);
   });
   it('preserves null associations for standalone dashboards', async () => {
     execute.mockResolvedValueOnce([
@@ -167,11 +168,11 @@ describe('UserCredentialsRepository', () => {
     ]);
   });
 
-  it('loads explicitly denied AMPP child UUIDs', async () => {
+  it('combines user and AMV client-level child UUID denials', async () => {
     execute.mockResolvedValueOnce([[{ workload_id: 'UUID-A' }, { workload_id: 'uuid-b' }]]);
     const repository = new UserCredentialsRepository({ get: jest.fn() } as any);
     await expect(repository.getWorkloadDenials('123')).resolves.toEqual(['uuid-a', 'uuid-b']);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('client_user_workload_denials'), ['123']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('client_workload_denials'), ['123', '123']);
   });
 
 });
