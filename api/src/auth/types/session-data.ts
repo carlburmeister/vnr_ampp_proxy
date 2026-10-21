@@ -9,6 +9,7 @@ export type AmppMatrixAccess = Record<
   string,
   {
     producerIds?: string[];
+    writableProducerIds?: string[];
     producerNames?: Record<string, string>;
     consumerIds?: string[];
   }
@@ -45,6 +46,7 @@ declare module 'express-session' {
     allowedDashboardIds?: string[];
     allowedDashboards?: AllowedDashboard[];
     amppAllowedWorkloadIds?: string[];
+    amppResourceWorkloadIds?: string[];
     amppUserId?: string;
     amppCookieJar?: ReturnType<CookieJar['toJSON']>;
     amppAccessToken?: string;

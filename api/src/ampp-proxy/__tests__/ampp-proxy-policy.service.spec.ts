@@ -43,6 +43,27 @@ describe('AmppProxyPolicyService', () => {
     } as unknown as SessionData;
   });
 
+  it('allows only read-only, same-scope node discovery', () => {
+    const nodeId = '14ff3382-dc0e-4dd4-a0c0-8c13eac08c88';
+    (session.allowedWorkloads ?? [])[0].nodeId = nodeId;
+    const path = `/discovery/api/v1/services?instance=${nodeId}`;
+    expect(service.assertApiAccess(session, workloadId, 'GET', path)).toBe(path);
+    expect(() => service.assertApiAccess(session, secondWorkloadId, 'GET', path))
+      .toThrow(ForbiddenException);
+    expect(() => service.assertApiAccess(session, workloadId, 'POST', path))
+      .toThrow(ForbiddenException);
+    expect(() => service.assertApiAccess(session, workloadId, 'GET',
+      `${path}&extra=1`)).toThrow(ForbiddenException);
+    expect(() => service.assertApiAccess(session, workloadId, 'GET',
+      '/discovery/api/v1/services?instance=unapproved-node'))
+      .toThrow(ForbiddenException);
+  });
+
+  it('preserves workload-specific discovery behavior', () => {
+    const path = `/discovery/api/v1/services?instance=${workloadId}`;
+    expect(service.assertApiAccess(session, workloadId, 'GET', path)).toBe(path);
+  });
+
   it('allows existing workload UI paths that reference the proxy workload', () => {
     const launchPath = `/app/wrapper/single/GV.AMPP.Apps.FlowMonitor/${workloadId}`;
     const callbackPath = `/app/wrapper/callback/${workloadId}`;

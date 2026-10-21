@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { type Method } from 'axios';
 import { CookieJar } from 'tough-cookie';
@@ -22,6 +22,7 @@ type AmppCookieHttpRequest = {
 @Injectable()
 export class AmppCookieHttpService {
   private readonly platformUrl: URL;
+  private readonly logger = new Logger(AmppCookieHttpService.name);
 
   constructor(private readonly config: ConfigService) {
     this.platformUrl = new URL(
@@ -42,6 +43,7 @@ export class AmppCookieHttpService {
     for (let redirectCount = 0; redirectCount <= 10; redirectCount += 1) {
       const cookie = await cookieJar.getCookieString(url.toString());
 
+      const startedAt = Date.now();
       try {
         const response = await axios.request<ArrayBuffer>({
           url: url.toString(),
@@ -55,6 +57,14 @@ export class AmppCookieHttpService {
           responseType: 'arraybuffer',
           validateStatus: () => true,
         });
+
+        if (response.status >= 500) {
+          // Log only the path: OAuth query parameters can contain credentials.
+          this.logger.warn(
+            `AMPP upstream HTTP ${response.status} ${method} ${url.pathname} ` +
+              `(${Date.now() - startedAt}ms)`,
+          );
+        }
 
         await this.storeResponseCookies(
           cookieJar,
@@ -108,11 +118,12 @@ export class AmppCookieHttpService {
           throw error;
         }
 
-        throw new BadGatewayException(
-          `Unable to reach AMPP: ${
-            error instanceof Error ? error.message : 'unknown error'
-          }`,
+        const code = axios.isAxiosError(error) ? error.code : undefined;
+        this.logger.warn(
+          `AMPP transport failure ${method} ${url.pathname} ` +
+            `(${Date.now() - startedAt}ms${code ? `, ${code}` : ''})`,
         );
+        throw new BadGatewayException('Unable to reach AMPP');
       }
     }
 

@@ -10,6 +10,64 @@ describe('AmppResponseRewriterService', () => {
     getOrThrow: () => PLATFORM_URL,
   } as any);
 
+  it('caches unmodified wrapper JavaScript privately and preserves validators', () => {
+    const body = Buffer.from('window.ok = true;');
+    const result = service.rewrite(SOURCE_WORKLOAD_ID, PUBLIC_ORIGIN, {
+      status: 200,
+      headers: {
+        'content-type': 'text/javascript',
+        'cache-control': 'public, max-age=0',
+        etag: '"bundle-1"',
+        'last-modified': 'Mon, 19 Oct 2026 10:00:00 GMT',
+      },
+      body,
+      url: `${PLATFORM_URL}/app/wrapper/main.bundle.js`,
+    });
+
+    expect(result.body).toBe(body);
+    expect(result.headers['Cache-Control']).toContain('private, max-age=300');
+    expect(result.headers.ETag).toBe('W/"bundle-1"');
+    expect(result.headers['Last-Modified']).toBe('Mon, 19 Oct 2026 10:00:00 GMT');
+  });
+
+  it('does not cache transformed HTML, API responses, or assets with cookies', () => {
+    for (const [url, type, extra] of [
+      [`${PLATFORM_URL}/app/wrapper/single/pkg/${SOURCE_WORKLOAD_ID}`, 'text/html', {}],
+      [`${PLATFORM_URL}/discovery/api/v1/services`, 'text/javascript', {}],
+      [`${PLATFORM_URL}/app/wrapper/main.bundle.js`, 'text/javascript', { 'set-cookie': 'sid=abc' }],
+    ] as const) {
+      const result = service.rewrite(SOURCE_WORKLOAD_ID, PUBLIC_ORIGIN, {
+        status: 200,
+        headers: { 'content-type': type, ...extra },
+        body: Buffer.from(type === 'text/html' ? '<html><head></head></html>' : 'hello'),
+        url,
+      });
+      expect(result.headers['Cache-Control']).toBe('no-store');
+    }
+  });
+
+  it('rewrites CSS but does not forward the upstream validator for modified bytes', () => {
+    const result = service.rewrite(SOURCE_WORKLOAD_ID, PUBLIC_ORIGIN, {
+      status: 200,
+      headers: { 'content-type': 'text/css', etag: '"upstream-css"' },
+      body: Buffer.from('body {background: url("/app/wrapper/logo.png")}'),
+      url: `${PLATFORM_URL}/app/wrapper/main.css`,
+    });
+    expect(result.headers['Cache-Control']).toContain('private');
+    expect(result.headers.ETag).toBeUndefined();
+  });
+
+  it('keeps JavaScript 304 revalidations cacheable', () => {
+    const result = service.rewrite(SOURCE_WORKLOAD_ID, PUBLIC_ORIGIN, {
+      status: 304,
+      headers: { etag: '"bundle-1"' },
+      body: Buffer.alloc(0),
+      url: `${PLATFORM_URL}/app/wrapper/main.bundle.js`,
+    });
+    expect(result.status).toBe(304);
+    expect(result.headers['Cache-Control']).toContain('max-age=300');
+  });
+
   it('re-scopes dashboard-launched workload UI redirects to the target workload', () => {
     const response = service.rewrite(SOURCE_WORKLOAD_ID, PUBLIC_ORIGIN, {
       status: 302,

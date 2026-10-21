@@ -23,6 +23,8 @@ import { AmppDashboardFilterService } from './ampp-dashboard-filter.service';
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
+import { GvuiPhase1Service } from './gvui/gvui-phase1.service';
+import { filterDiscoveryNodeResponse } from './ampp-discovery-filter';
 
 @Injectable()
 export class AmppProxyService {
@@ -38,6 +40,7 @@ export class AmppProxyService {
     private readonly responseRewriter: AmppResponseRewriterService,
     private readonly sessionBroker: AmppSessionBrokerService,
     private readonly utilityLogin: AmppUtilityLoginService,
+    private readonly gvui: GvuiPhase1Service,
   ) {
     this.platformUrl = new URL(
       this.config.getOrThrow<string>('PLATFORM_URL'),
@@ -183,6 +186,8 @@ export class AmppProxyService {
       upstreamPath,
       response,
     );
+    response = this.gvui.filterCatalog(session, workloadId, upstreamPath, response);
+    response = filterDiscoveryNodeResponse(session, workloadId, upstreamPath, response);
 
     this.sessionBroker.saveCookieJar(
       frontendSessionId,

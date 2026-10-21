@@ -57,7 +57,7 @@ export class AmppProxySessionService {
             for (const key of [
               'user', 'parentWorkloadId', 'fabricId', 'nodeId',
               'allowedWorkloads', 'allowedDashboardIds', 'allowedDashboards',
-              'amppAllowedWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
+              'amppAllowedWorkloadIds', 'amppResourceWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
               'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
             ] as const) {
               (req.session as any)[key] = this.clone(latest[key]);
@@ -142,7 +142,7 @@ export class AmppProxySessionService {
 
       const target = (merged[fabricId] ??= {});
 
-      for (const key of ['producerIds', 'consumerIds'] as const) {
+      for (const key of ['producerIds', 'writableProducerIds', 'consumerIds'] as const) {
         if (!this.same(previous?.[key], current[key])) {
           target[key] = this.mergeIds(target[key], previous?.[key], current[key]);
         }

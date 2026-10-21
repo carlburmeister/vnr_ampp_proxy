@@ -14,6 +14,7 @@ import { AmppProxyService } from './ampp-proxy.service';
 import { AmppProxySessionService } from './ampp-proxy-session.service';
 import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
+import { GvuiPhase1Service } from './gvui/gvui-phase1.service';
 import { AmppWebSocketProxyService } from './ampp-websocket-proxy.service';
 
 @Module({
@@ -31,6 +32,7 @@ import { AmppWebSocketProxyService } from './ampp-websocket-proxy.service';
     AmppProxySessionService,
     AmppSessionBrokerService,
     AmppUtilityLoginService,
+    GvuiPhase1Service,
     AmppWebSocketProxyService,
   ],
   exports: [AmppWebSocketProxyService],

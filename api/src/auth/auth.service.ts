@@ -33,6 +33,7 @@ export type LoginResult = {
   allowedDashboardIds: string[];
   allowedDashboards: AllowedDashboard[];
   amppAllowedWorkloadIds: string[];
+  amppResourceWorkloadIds: string[];
   authorizationFingerprint: string;
 };
 
@@ -99,7 +100,7 @@ export class AuthService {
     ]);
     const fingerprint = this.getFingerprint(user, workloads, dashboards, denials);
     session.authorizationCheckedAt = Date.now();
-    if (session.authorizationFingerprint === fingerprint) {
+    if (session.authorizationFingerprint === fingerprint && session.amppResourceWorkloadIds) {
       // Refresh display labels without rebuilding authorization or changing access.
       const resolved = await this.withAmppDashboardNames(dashboards);
       const dashboardNames = new Map(resolved.map((item) => [item.id.toLowerCase(), item.name]));
@@ -147,6 +148,7 @@ export class AuthService {
     session.allowedDashboardIds = result.allowedDashboardIds;
     session.allowedDashboards = result.allowedDashboards;
     session.amppAllowedWorkloadIds = result.amppAllowedWorkloadIds;
+    session.amppResourceWorkloadIds = result.amppResourceWorkloadIds;
     session.authorizationFingerprint = result.authorizationFingerprint;
     session.authorizationCheckedAt = Date.now();
   }
@@ -187,9 +189,13 @@ export class AuthService {
       (workload) => workload.is_parent === 0,
     );
 
+    // Parent workload access also permits read-only producer discovery for denied children.
+    const resourceChildren = new Map<string, ChildWorkload[]>();
     const parentAllowedWorkloads = await Promise.all(
       parentDBWorkloads.map(async (workload) => {
         const workload_resp = await this.getWorkload(workload.id);
+        const children = await this.getChildWorkloads(workload.id, workload.pageType);
+        resourceChildren.set(workload.id.toLowerCase(), children);
 
         return {
           ...workload,
@@ -198,10 +204,7 @@ export class AuthService {
           packageName: workload_resp.packageName,
           fabricId: workload_resp.fabricId,
           nodeId: workload_resp.nodeId,
-          child_workloads: (await this.getChildWorkloads(
-            workload.id,
-            workload.pageType,
-          )).filter((child) => !denied.has(child.id.toLowerCase())),
+          child_workloads: children.filter((child) => !denied.has(child.id.toLowerCase())),
         };
       }),
     );
@@ -253,6 +256,16 @@ export class AuthService {
     const amppAllowedWorkloadIds = await this.getAmppAllowedWorkloadIds(
       allowedWorkloads, denied,
     );
+    // Never expose these IDs through the SPA workload selector or UI authorization.
+    // Include AMPP-discovered descendants of authorized parents, even if their UIs are denied.
+    const resourceParents = parentAllowedWorkloads.map((parent) => ({
+      ...parent,
+      child_workloads: resourceChildren.get(parent.id.toLowerCase()) ?? [],
+    }));
+    const amppResourceWorkloadIds = await this.getAmppAllowedWorkloadIds([
+      ...resourceParents,
+      ...standaloneAllowedWorkloads,
+    ]);
     const effectiveIds = new Set(amppAllowedWorkloadIds.map((id) => id.toLowerCase()));
     const allowedDashboards = await this.withAmppDashboardNames(assignedDashboards.filter(
       (dashboard) => dashboard.associatedWorkloadId === null ||
@@ -274,6 +287,7 @@ export class AuthService {
       allowedDashboardIds: allowedDashboards.map((dashboard) => dashboard.id),
       allowedDashboards,
       amppAllowedWorkloadIds,
+      amppResourceWorkloadIds,
       authorizationFingerprint: this.getFingerprint(user, userDBWorkloads, assignedDashboards, deniedIds),
     };
   }

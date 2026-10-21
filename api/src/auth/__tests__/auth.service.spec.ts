@@ -336,6 +336,23 @@ describe('AuthService', () => {
     expect(result.allowedDashboardIds).toEqual(['standalone-dashboard']);
   });
 
+  it('keeps denied children hidden while retaining their read-only resource IDs', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    getWorkloadDenials.mockResolvedValue(['child-workload-001']);
+    const result = await service.login('admin', 'password');
+    expect(result.allowedWorkloads[0].child_workloads.map((child) => child.id))
+      .not.toContain('child-workload-001');
+    expect(result.amppAllowedWorkloadIds).not.toContain('child-workload-001');
+    expect(result.amppResourceWorkloadIds).toEqual(expect.arrayContaining([
+      'parent-workload-001', 'child-workload-001', 'internal-workload-001',
+    ]));
+    const session: any = {};
+    service.applyAuthorization(session, result);
+    expect(session.amppResourceWorkloadIds).toEqual(result.amppResourceWorkloadIds);
+    expect(session.allowedWorkloads[0].child_workloads.map((child) => child.id))
+      .not.toContain('child-workload-001');
+  });
+
   it('allows authenticated users without assigned workloads', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
     getUserDBWorkloads.mockResolvedValue([]);
@@ -358,6 +375,7 @@ describe('AuthService', () => {
     expect(await service.refreshSessionAuthorization(session)).toBe(true);
     expect(session.allowedWorkloads).toEqual([]);
     expect(session.amppAllowedWorkloadIds).toEqual([]);
+    expect(session.amppResourceWorkloadIds).toEqual([]);
   });
 
 });

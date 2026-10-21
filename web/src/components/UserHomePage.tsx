@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { UserManagementDialog } from './UserManagementDialog';
+import { GvuiPhase1Button } from '../features/gvui/GvuiPhase1Button';
 
 import './UserHomePage.css';
 
@@ -409,6 +410,7 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
               );
             })}
             {renderDashboardButtons(null)}
+            <GvuiPhase1Button />
           </div>
         ) : (
           <p>No workloads assigned.</p>

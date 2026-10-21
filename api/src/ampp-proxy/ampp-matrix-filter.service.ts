@@ -38,7 +38,13 @@ export class AmppMatrixFilterService {
   }
 
   isProducerIdAllowed(session: SessionData, id: string): boolean {
+    // Readable producers can be routed to an authorized mixer.
     return this.getCachedIds(session, 'producerIds').has(id.toLowerCase());
+  }
+
+  isProducerWritable(session: SessionData, id: string): boolean {
+    // Reading a denied child's producer does not grant permission to edit it.
+    return this.getCachedIds(session, 'writableProducerIds').has(id.toLowerCase());
   }
 
   isConsumerIdAllowed(session: SessionData, id: string): boolean {
@@ -171,6 +177,7 @@ export class AmppMatrixFilterService {
     }
 
     const allowedWorkloadIds = this.getAllowedWorkloadIds(session);
+    const resourceWorkloadIds = this.getResourceWorkloadIds(session);
     const fabricAccess = this.getFabricAccess(session, fabricId);
     let filteredItems: unknown[];
 
@@ -187,7 +194,7 @@ export class AmppMatrixFilterService {
 
         const baseAllowed = this.isAllowedEntity(
           producer,
-          allowedWorkloadIds,
+          resourceWorkloadIds,
         );
         const dashboardAllowed = this.isDashboardEntityAllowed(
           session,
@@ -241,6 +248,11 @@ export class AmppMatrixFilterService {
         return [{ ...wrapper, producer: filteredProducer }];
       });
       fabricAccess.producerIds = this.getWrappedIds(baseItems, 'producer');
+      fabricAccess.writableProducerIds = this.getWrappedIds(
+        baseItems.filter((item) => this.isAllowedEntity(
+          this.asObject(this.asObject(item)?.producer) ?? {}, allowedWorkloadIds,
+        )), 'producer',
+      );
       fabricAccess.producerNames = this.getWrappedNames(baseItems, 'producer');
     } else if (responseKey === 'consumers') {
       const baseItems: unknown[] = [];
@@ -386,6 +398,7 @@ export class AmppMatrixFilterService {
     responseKey: string,
   ): AmppCookieHttpResponse {
     const allowedWorkloadIds = this.getAllowedWorkloadIds(session);
+    const resourceWorkloadIds = this.getResourceWorkloadIds(session);
     const allowedFabricIds = this.getAllowedFabricIds(session);
     let filteredItems: unknown[];
 
@@ -403,7 +416,7 @@ export class AmppMatrixFilterService {
 
         const baseAllowed = this.isAllowedEntity(
           entity,
-          allowedWorkloadIds,
+          entityKey === 'producer' ? resourceWorkloadIds : allowedWorkloadIds,
           allowedFabricIds,
         );
         const dashboardAllowed = this.isDashboardEntityAllowed(
@@ -434,7 +447,10 @@ export class AmppMatrixFilterService {
           !entity ||
           typeof fabricId !== 'string' ||
           typeof id !== 'string' ||
-          !this.isAllowedEntity(entity, allowedWorkloadIds, allowedFabricIds)
+          !this.isAllowedEntity(
+            entity, entityKey === 'producer' ? resourceWorkloadIds : allowedWorkloadIds,
+            allowedFabricIds,
+          )
         ) {
           continue;
         }
@@ -443,6 +459,9 @@ export class AmppMatrixFilterService {
 
         if (entityKey === 'producer') {
           this.addId((access.producerIds ??= []), id);
+          if (this.isAllowedEntity(entity, allowedWorkloadIds, allowedFabricIds)) {
+            this.addId((access.writableProducerIds ??= []), id);
+          }
           if (typeof entity.name === 'string') {
             (access.producerNames ??= {})[id.toLowerCase()] = entity.name;
           }
@@ -550,7 +569,7 @@ export class AmppMatrixFilterService {
       throw new BadGatewayException('AMPP Matrix producer response is not valid JSON');
     }
 
-    if (!this.isAllowedEntity(producer, this.getAllowedWorkloadIds(session))) {
+    if (!this.isAllowedEntity(producer, this.getResourceWorkloadIds(session), this.getAllowedFabricIds(session))) {
       throw new BadGatewayException('AMPP Matrix producer response is not allowed');
     }
 
@@ -683,6 +702,7 @@ export class AmppMatrixFilterService {
   ): MatrixNotificationResult | undefined {
     const normalizedTopic = topic.toLowerCase();
     const allowedWorkloadIds = this.getAllowedWorkloadIds(session);
+    const resourceWorkloadIds = this.getResourceWorkloadIds(session);
     const allowedFabricIds = new Set([
       ...this.getAllowedFabricIds(session),
       ...getDashboardResourceIds(session, workloadId, 'fabric'),
@@ -694,7 +714,7 @@ export class AmppMatrixFilterService {
         workloadId,
         content,
         'producer',
-        allowedWorkloadIds,
+        resourceWorkloadIds,
         allowedFabricIds,
       );
     }
@@ -754,7 +774,7 @@ export class AmppMatrixFilterService {
         workloadId,
         content,
         'producer',
-        allowedWorkloadIds,
+        resourceWorkloadIds,
         allowedFabricIds,
       );
     }
@@ -766,7 +786,7 @@ export class AmppMatrixFilterService {
       !producer ||
       !consumer ||
       !(
-        this.isAllowedEntity(producer, allowedWorkloadIds, allowedFabricIds) ||
+        this.isAllowedEntity(producer, resourceWorkloadIds, allowedFabricIds) ||
         this.isDashboardEntityAllowed(session, workloadId, producer, 'producer')
       ) ||
       !(
@@ -781,8 +801,11 @@ export class AmppMatrixFilterService {
     const consumerId = consumer.id;
 
     if (typeof producerId === 'string') {
-      if (this.isAllowedEntity(producer, allowedWorkloadIds, allowedFabricIds)) {
+      if (this.isAllowedEntity(producer, resourceWorkloadIds, allowedFabricIds)) {
         this.addId(fabricAccess.producerIds ??= [], producerId);
+        if (this.isAllowedEntity(producer, allowedWorkloadIds, allowedFabricIds)) {
+          this.addId(fabricAccess.writableProducerIds ??= [], producerId);
+        }
         if (typeof producer.name === 'string') {
           (fabricAccess.producerNames ??= {})[producerId.toLowerCase()] = producer.name;
         }
@@ -846,6 +869,9 @@ export class AmppMatrixFilterService {
     const baseAllowed = this.isAllowedEntity(
       entity, allowedWorkloadIds, allowedFabricIds,
     );
+    const writable = entityKey === 'producer' && this.isAllowedEntity(
+      entity, this.getAllowedWorkloadIds(session), allowedFabricIds,
+    );
     const filtered =
       entityKey === 'producer'
         ? this.filterProducerRelations(
@@ -876,10 +902,12 @@ export class AmppMatrixFilterService {
         this.removeId(ids, id);
         if (entityKey === 'producer') {
           delete fabricAccess.producerNames?.[id.toLowerCase()];
+          this.removeId(fabricAccess.writableProducerIds ?? [], id);
         }
       } else {
         if (baseAllowed) {
           this.addId(ids, id);
+          if (writable) this.addId(fabricAccess.writableProducerIds ??= [], id);
         } else {
           this.addDashboardEntityId(
             session,
@@ -1097,6 +1125,13 @@ export class AmppMatrixFilterService {
     );
   }
 
+  private getResourceWorkloadIds(session: SessionData): Set<string> {
+    return new Set(
+      (session.amppResourceWorkloadIds ?? [...this.getAllowedWorkloadIds(session)])
+        .map((id) => id.toLowerCase()),
+    );
+  }
+
   private getAllowedFabricIds(session: SessionData): Set<string> {
     return new Set(
       (session.allowedWorkloads ?? [])
@@ -1142,7 +1177,7 @@ export class AmppMatrixFilterService {
 
   private getCachedIds(
     session: SessionData,
-    key: 'producerIds' | 'consumerIds',
+    key: 'producerIds' | 'writableProducerIds' | 'consumerIds',
   ): Set<string> {
     return new Set(
       Object.values(session.amppMatrixAccess ?? {}).flatMap((access) =>

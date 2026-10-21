@@ -11,6 +11,15 @@ import {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Only read-only identifiers and runtime state may be disclosed for a UI-denied workload.
+const RESOURCE_STATE_FIELDS = [
+  'id', 'name', 'alias', 'applicationName', 'packageName',
+  'parentId', 'fabricId', 'productCode', 'parentProductCode',
+] as const;
+const RESOURCE_RUNTIME_FIELDS = [
+  'nodeId', 'nodeName', 'state', 'isWorkloadAssigned',
+] as const;
+
 @Injectable()
 export class AmppDashboardFilterService {
   private readonly platformUrl: URL;
@@ -49,12 +58,7 @@ export class AmppDashboardFilterService {
     }
 
     if (pathname === '/cluster/state/api/v1/workloads') {
-      return this.filterWrappedList(
-        response,
-        'workloads',
-        'workload',
-        this.getAllowedWorkloadIds(session),
-      );
+      return this.filterWorkloadStates(session, response);
     }
 
     if (pathname === '/cluster/state/api/v2/nodes') {
@@ -279,14 +283,17 @@ export class AmppDashboardFilterService {
       );
     }
 
+    const allowedWorkloads = this.getAllowedWorkloadIds(session);
+    const resourceWorkloads = this.getResourceWorkloadIds(session);
+
     return this.replaceJsonBody(
       response,
-      parsed.filter((notification) => {
+      parsed.flatMap((notification) => {
         const item = this.asObject(notification);
         const topic = item?.topic;
 
         if (typeof topic !== 'string') {
-          return false;
+          return [];
         }
 
         const normalized = topic.toLowerCase();
@@ -297,16 +304,21 @@ export class AmppDashboardFilterService {
           normalized.startsWith('gv.platform.service.') ||
           normalized.startsWith('gv.cluster.matrix.')
         ) {
-          return true;
+          return [notification];
         }
 
         const workload = topic.match(
           /^gv\.cluster\.workload\.([0-9a-f-]{36})(?:\.|$)/i,
         );
         if (workload) {
-          return this.getAllowedWorkloadIds(session).has(
-            workload[1].toLowerCase(),
-          );
+          const id = workload[1].toLowerCase();
+          if (allowedWorkloads.has(id)) {
+            return [notification];
+          }
+          const safe = resourceWorkloads.has(id)
+            ? this.filterResourceWorkloadNotification(item, id)
+            : undefined;
+          return safe ? [safe] : [];
         }
 
         const node = topic.match(
@@ -315,7 +327,9 @@ export class AmppDashboardFilterService {
         if (node) {
           return this.getAllowedNodeIds(session, workloadId).has(
             node[1].toLowerCase(),
-          );
+          )
+            ? [notification]
+            : [];
         }
 
         const fabric = topic.match(
@@ -324,23 +338,131 @@ export class AmppDashboardFilterService {
         if (fabric) {
           return this.getAllowedFabricIds(session, workloadId).has(
             fabric[1].toLowerCase(),
+          )
+            ? [notification]
+            : [];
+        }
+
+        if (normalized === 'gv.cluster.workload.created') {
+          if (
+            this.referencesOnlyAllowed(
+              session,
+              this.parseNotificationContent(item.content),
+              true,
+            )
+          ) {
+            return [notification];
+          }
+          const safe = this.filterResourceWorkloadNotification(
+            item,
+            undefined,
+            resourceWorkloads,
           );
+          return safe ? [safe] : [];
         }
 
         if (
-          normalized === 'gv.cluster.workload.created' ||
           normalized === 'gv.cluster.fabric.node.assigned' ||
           normalized === 'gv.cluster.fabric.node.unassigned'
         ) {
           const content = this.parseNotificationContent(item.content);
-          return Boolean(
-            content && this.referencesOnlyAllowed(session, content, true),
-          );
+          return content && this.referencesOnlyAllowed(session, content, true)
+            ? [notification]
+            : [];
         }
 
-        return true;
+        return [notification];
       }),
     );
+  }
+
+  private filterWorkloadStates(
+    session: SessionData,
+    response: AmppCookieHttpResponse,
+  ): AmppCookieHttpResponse {
+    const parsed = this.parseJsonObject(response);
+    if (!Array.isArray(parsed.workloads)) {
+      throw new BadGatewayException('AMPP response is missing workloads');
+    }
+
+    const allowed = this.getAllowedWorkloadIds(session);
+    const resources = this.getResourceWorkloadIds(session);
+    return this.replaceJsonBody(response, {
+      ...parsed,
+      workloads: parsed.workloads.flatMap((entry) => {
+        const wrapper = this.asObject(entry);
+        const workload = this.asObject(wrapper?.workload);
+        const id = workload?.id;
+        if (typeof id !== 'string') return [];
+        const normalizedId = id.toLowerCase();
+        if (allowed.has(normalizedId)) return [entry];
+        if (!resources.has(normalizedId)) return [];
+        return [{ workload: this.resourceWorkloadState(workload) }];
+      }),
+    });
+  }
+
+  private filterResourceWorkloadNotification(
+    notification: Record<string, unknown>,
+    expectedId?: string,
+    resourceIds?: Set<string>,
+  ): Record<string, unknown> | undefined {
+    const content = this.asObject(
+      this.parseNotificationContent(notification.content),
+    );
+    const wrapped = this.asObject(content?.workload);
+    const record = wrapped ?? content;
+    if (!record) return undefined;
+
+    const id = record.id ?? record.workloadId ?? expectedId;
+    if (typeof id !== 'string' || !UUID_PATTERN.test(id)) return undefined;
+    if (expectedId && id.toLowerCase() !== expectedId) return undefined;
+    if (resourceIds && !resourceIds.has(id.toLowerCase())) return undefined;
+
+    const safe = this.resourceWorkloadState({ ...record, id });
+    const body = wrapped ? { workload: safe } : safe;
+    return {
+      ...notification,
+      content: typeof notification.content === 'string'
+        ? JSON.stringify(body)
+        : body,
+    };
+  }
+
+  private resourceWorkloadState(
+    workload: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const safe: Record<string, unknown> = {};
+    for (const key of RESOURCE_STATE_FIELDS) {
+      if (key in workload) safe[key] = workload[key];
+    }
+
+    const runtime = (value: unknown): Record<string, unknown> | undefined => {
+      const state = this.asObject(value);
+      if (!state) return undefined;
+      const result: Record<string, unknown> = {};
+      for (const key of RESOURCE_RUNTIME_FIELDS) {
+        if (key in state) result[key] = state[key];
+      }
+      return result;
+    };
+
+    if ('state' in workload) {
+      const state = workload.state;
+      if (typeof state === 'string' && /^[a-z-]{1,32}$/i.test(state)) {
+        safe.state = state;
+      } else if (this.asObject(state)) {
+        safe.state = runtime(state);
+      }
+    }
+    if (Array.isArray(workload.states)) {
+      safe.states = workload.states.map(runtime).filter(Boolean);
+    }
+    const desiredState = this.asObject(workload.desiredState);
+    if (desiredState && typeof desiredState.state === 'string') {
+      safe.desiredState = { state: desiredState.state };
+    }
+    return safe;
   }
 
   private referencesOnlyAllowed(
@@ -653,6 +775,12 @@ export class AmppDashboardFilterService {
         ])
       ).map((id) => id.toLowerCase()),
     );
+  }
+
+  private getResourceWorkloadIds(session: SessionData): Set<string> {
+    return session.amppResourceWorkloadIds
+      ? new Set(session.amppResourceWorkloadIds.map((id) => id.toLowerCase()))
+      : this.getAllowedWorkloadIds(session);
   }
 
   private getAllowedFabricIds(

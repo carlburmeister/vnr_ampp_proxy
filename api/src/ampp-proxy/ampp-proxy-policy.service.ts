@@ -8,6 +8,8 @@ import type { SessionData } from 'express-session';
 import type { AllowedWorkload } from '../ampp/types/workload_types';
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { getDashboardResourceIds } from './ampp-dashboard-resources';
+import { GvuiPhase1Service } from './gvui/gvui-phase1.service';
+import { getDiscoveryNodeWorkloads } from './ampp-discovery-filter';
 
 const API_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const GLOBAL_BOOTSTRAP_GET_PATHS = new Set([
@@ -44,7 +46,10 @@ const MATRIX_READ_PATHS = new Set([
 
 @Injectable()
 export class AmppProxyPolicyService {
-  constructor(private readonly matrixFilter: AmppMatrixFilterService) {}
+  constructor(
+    private readonly matrixFilter: AmppMatrixFilterService,
+    private readonly gvui?: GvuiPhase1Service,
+  ) {}
 
   assertUiAccess(
     session: SessionData,
@@ -88,6 +93,11 @@ export class AmppProxyPolicyService {
       throw new ForbiddenException(
         'AMPP API requests must use the API proxy route',
       );
+    }
+
+    if (/^\/gvui(?:\/|$)/i.test(target.pathname)) {
+      this.gvui?.assertUiPath(session, workloadId, target);
+      if (!this.gvui) throw new ForbiddenException('GV.UI is not enabled');
     }
 
     const dashboardId = this.getDashboardId(target.pathname);
@@ -142,8 +152,8 @@ export class AmppProxyPolicyService {
       throw new ForbiddenException('AMPP API endpoint is not allowed');
     }
 
-    this.assertWorkloadReferences(target, allowedWorkloadIds);
-    this.assertBodyWorkloadReferences(body, allowedWorkloadIds);
+    this.assertWorkloadReferences(target, allowedWorkloadIds, session, workloadId);
+    this.assertBodyWorkloadReferences(body, allowedWorkloadIds, session, normalizedMethod, target);
     this.assertAssignmentAccess(session, normalizedMethod, target, body);
 
     return `${target.pathname}${target.search}`;
@@ -180,6 +190,10 @@ export class AmppProxyPolicyService {
       return true;
     }
 
+    if (this.gvui?.isCatalogAllowed(session, workloadId, method, target)) {
+      return true;
+    }
+
     if (
       this.isAllowedDashboardRequest(
         method,
@@ -213,6 +227,7 @@ export class AmppProxyPolicyService {
     ) {
       return (
         this.isAllowedWorkloadRequest(method, target, allowedWorkloadIds) ||
+        this.isAllowedDiscoveryNodeRequest(method, target, session, workloadId) ||
         this.isAllowedDashboardNodeRequest(method, target, session, workloadId)
       );
     }
@@ -322,6 +337,21 @@ export class AmppProxyPolicyService {
     return false;
   }
 
+  private isAllowedDiscoveryNodeRequest(
+    method: string,
+    target: URL,
+    session: SessionData,
+    workloadId: string,
+  ): boolean {
+    return method === 'GET' &&
+      target.pathname.replace(/\/+$/, '').toLowerCase() === '/discovery/api/v1/services' &&
+      target.searchParams.size === 1 &&
+      target.searchParams.has('instance') &&
+      getDiscoveryNodeWorkloads(
+        session, workloadId, target.searchParams.get('instance') ?? '',
+      ).size > 0;
+  }
+
   private isAllowedDashboardNodeRequest(
     method: string,
     target: URL,
@@ -384,7 +414,7 @@ export class AmppProxyPolicyService {
       method === 'PUT' &&
         !target.search &&
         producerMatch &&
-        this.matrixFilter.isProducerIdAllowed(session, producerMatch[1]) &&
+        this.matrixFilter.isProducerWritable(session, producerMatch[1]) &&
         this.isAliasUpdateBody(body),
     );
   }
@@ -425,6 +455,7 @@ export class AmppProxyPolicyService {
         allowedWorkloadIds,
         dashboardScope,
         workloadId,
+        session,
       );
     }
 
@@ -433,7 +464,7 @@ export class AmppProxyPolicyService {
       !target.search &&
       /^\/notifications\/api\/v1\/notifications\/?$/i.test(decodedPath)
     ) {
-      return this.isAllowedNotificationPublish(body, allowedWorkloadIds);
+      return this.isAllowedNotificationPublish(body, allowedWorkloadIds, session);
     }
 
     const notificationMatch = decodedPath.match(
@@ -464,9 +495,17 @@ export class AmppProxyPolicyService {
           subscriptionMatch[1],
           allowedWorkloadIds,
         ) &&
-        this.isAllowedNotificationTopic(
+        (this.gvui?.isNotificationTopicAllowed(
+          session,
+          workloadId,
+          subscriptionMatch[1],
+          subscriptionMatch[3],
+        ) || this.isAllowedNotificationTopic(
           subscriptionMatch[3],
           allowedWorkloadIds,
+          new Set([
+            ...(session.amppResourceWorkloadIds ?? []),
+          ].map((id) => id.toLowerCase())),
           new Set([
             ...this.getAllowedFabricIds(session.allowedWorkloads ?? []),
             ...getDashboardResourceIds(session, workloadId, 'fabric'),
@@ -476,13 +515,14 @@ export class AmppProxyPolicyService {
             ...getDashboardResourceIds(session, workloadId, 'node'),
           ]),
           dashboardScope,
-        ),
+        )),
     );
   }
 
   private isAllowedNotificationTopic(
     topic: string,
     allowedWorkloadIds: Set<string>,
+    resourceWorkloadIds: Set<string>,
     allowedFabricIds: Set<string>,
     allowedNodeIds: Set<string>,
     dashboardScope: boolean,
@@ -521,6 +561,14 @@ export class AmppProxyPolicyService {
       return dashboardScope && allowedNodeIds.has(nodeTopic[1].toLowerCase());
     }
 
+    // WebRTC previews may originate in a child whose UI is denied.
+    // Do not apply this read permission to application/control topics.
+    const preview = topic.match(/^gv\.webrtc\.([0-9a-f-]{36})\.[0-9a-f-]{36}$/i);
+    if (preview) {
+      return allowedWorkloadIds.has(preview[1].toLowerCase()) ||
+        resourceWorkloadIds.has(preview[1].toLowerCase());
+    }
+
     const workloadPatterns = [
       /^gv\.ampp\.workload\.([0-9a-f-]{36})\.roundtriptest$/i,
       /^gv\.ampp\.apps\.[^.]+\.([0-9a-f-]{36})\.#$/i,
@@ -542,8 +590,10 @@ export class AmppProxyPolicyService {
 
     if (engineStats) {
       return (
-        allowedWorkloadIds.has(engineStats[1].toLowerCase()) &&
-        allowedWorkloadIds.has(engineStats[2].toLowerCase())
+        (allowedWorkloadIds.has(engineStats[1].toLowerCase()) ||
+          resourceWorkloadIds.has(engineStats[1].toLowerCase())) &&
+        (allowedWorkloadIds.has(engineStats[2].toLowerCase()) ||
+          resourceWorkloadIds.has(engineStats[2].toLowerCase()))
       );
     }
 
@@ -561,6 +611,7 @@ export class AmppProxyPolicyService {
     allowedWorkloadIds: Set<string>,
     dashboardScope: boolean,
     workloadId: string,
+    session: SessionData,
   ): boolean {
     const parsed = this.parseJsonObject(body);
     const id = parsed?.id;
@@ -576,6 +627,7 @@ export class AmppProxyPolicyService {
         Object.keys(parsed).length === 5 &&
         typeof id === 'string' &&
         (this.isAllowedMailboxId(id, allowedWorkloadIds) ||
+          (this.gvui?.isMailboxIdAllowed(session, workloadId, id) ?? false) ||
           (dashboardScope &&
             (/^ts-cluster\.systemdashboard--[0-9a-f-]{36}$/i.test(id) ||
               proxiedDashboardMailbox?.[1].toLowerCase() ===
@@ -590,6 +642,7 @@ export class AmppProxyPolicyService {
   private isAllowedNotificationPublish(
     body: Buffer | undefined,
     allowedWorkloadIds: Set<string>,
+    session: SessionData,
   ): boolean {
     const parsed = this.parseJsonObject(body);
     const topic = parsed?.topic;
@@ -643,10 +696,16 @@ export class AmppProxyPolicyService {
     const engineId = engineTopic[1].toLowerCase();
     const peerId = engineTopic[2]?.toLowerCase();
 
-    if (
-      !allowedWorkloadIds.has(engineId) ||
-      (peerId && !allowedWorkloadIds.has(peerId))
-    ) {
+    // A proxied authorized workload may negotiate a read-only WebRTC preview
+    // of a source in a UI-denied child. Never extend non-WebRTC publications.
+    const resourceIds = new Set(
+      (session.amppResourceWorkloadIds ?? []).map((id) => id.toLowerCase()),
+    );
+    const hasEngine = allowedWorkloadIds.has(engineId) ||
+      (sourceWorkload.proxied && resourceIds.has(engineId));
+    const hasPeer = !peerId || allowedWorkloadIds.has(peerId) ||
+      (sourceWorkload.proxied && resourceIds.has(peerId));
+    if (!hasEngine || !hasPeer) {
       return false;
     }
 
@@ -962,6 +1021,8 @@ export class AmppProxyPolicyService {
   private assertWorkloadReferences(
     target: URL,
     allowedIds: Set<string>,
+    session: SessionData,
+    workloadId: string,
   ): void {
     const decodedPath = target.pathname
       .split('/')
@@ -1000,7 +1061,10 @@ export class AmppProxyPolicyService {
 
       if (
         (isWorkloadId || isParentId || isDiscoveryInstance) &&
-        !allowedIds.has(value.toLowerCase())
+        !allowedIds.has(value.toLowerCase()) &&
+        !(isDiscoveryInstance &&
+          getDiscoveryNodeWorkloads(session, workloadId, value).size > 0 &&
+          target.searchParams.size === 1)
       ) {
         throw new ForbiddenException(
           'AMPP API query references a different workload',
@@ -1012,6 +1076,9 @@ export class AmppProxyPolicyService {
   private assertBodyWorkloadReferences(
     body: Buffer | undefined,
     allowedIds: Set<string>,
+    session: SessionData,
+    method: string,
+    target: URL,
   ): void {
     if (!body?.length) {
       return;
@@ -1025,7 +1092,12 @@ export class AmppProxyPolicyService {
       return;
     }
 
-    const inspect = (value: unknown): void => {
+    const sourceSelect = method === 'POST' &&
+      /^\/mocha\/application\/[^/]+\/api\/v1\/app\/sourceselect\/?$/i.test(target.pathname);
+    const resourceIds = new Set(
+      (session.amppResourceWorkloadIds ?? []).map((id) => id.toLowerCase()),
+    );
+    const inspect = (value: unknown, path: string[] = []): void => {
       if (typeof value === 'string') {
         this.assertAmppWorkloadReferences(
           value,
@@ -1036,7 +1108,7 @@ export class AmppProxyPolicyService {
       }
 
       if (Array.isArray(value)) {
-        value.forEach(inspect);
+        value.forEach((item) => inspect(item, path));
         return;
       }
 
@@ -1049,14 +1121,16 @@ export class AmppProxyPolicyService {
           /^(?:workload|workload_?id)$/i.test(name) &&
           typeof child === 'string' &&
           /^[0-9a-f-]{36}$/i.test(child) &&
-          !allowedIds.has(child.toLowerCase())
+          !allowedIds.has(child.toLowerCase()) &&
+          !(sourceSelect && path.length === 1 && path[0] === 'Producer' &&
+            resourceIds.has(child.toLowerCase()))
         ) {
           throw new ForbiddenException(
             'AMPP API body references a different workload',
           );
         }
 
-        inspect(child);
+        inspect(child, [...path, name]);
       }
     };
 
@@ -1296,7 +1370,10 @@ export class AmppProxyPolicyService {
       .join('/');
     const match =
       decodedPath.match(
-        /^\/app\/wrapper\/single\/[^/]+\/([0-9a-f-]{36})(?:\/|$)/i,
+        /^\/app\/wrapper\/(?:embedded\/)?single\/[^/]+\/([0-9a-f-]{36})(?:\/|$)/i,
+      ) ??
+      decodedPath.match(
+        /^\/app\/wrapper\/embedded\/callback\/embedded\/single\/[^/]+\/([0-9a-f-]{36})(?:\/|$)/i,
       ) ??
       decodedPath.match(
         /^\/mocha\/application\/([0-9a-f-]{36})(?:\/|$)/i,

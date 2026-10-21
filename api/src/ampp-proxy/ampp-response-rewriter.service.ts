@@ -84,8 +84,11 @@ export class AmppResponseRewriterService {
     response: AmppCookieHttpResponse,
     contentType: string,
   ): Record<string, string> {
+    const cacheable = this.isCacheableStaticResource(response, contentType);
     const headers: Record<string, string> = {
-      'Cache-Control': 'no-store',
+      'Cache-Control': cacheable
+        ? 'private, max-age=300, must-revalidate'
+        : 'no-store',
       'Content-Security-Policy': [
         "default-src 'self' data: blob:",
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
@@ -121,6 +124,18 @@ export class AmppResponseRewriterService {
       }
     }
 
+    if (cacheable && (/\.(?:js|mjs)$/i.test(new URL(response.url).pathname)) &&
+        (response.status === 304 || /(?:java|ecma)script/i.test(contentType))) {
+      // JavaScript bytes are not transformed. A weak validator remains valid
+      // if Axios or Nginx changes the response's content encoding.
+      const etag = this.headerValue(response.headers.etag);
+      if (etag) {
+        headers.ETag = etag.startsWith('W/') ? etag : `W/${etag}`;
+      }
+      const modified = this.headerValue(response.headers['last-modified']);
+      if (modified) headers['Last-Modified'] = modified;
+    }
+
     const location = this.headerValue(response.headers.location);
 
     if (location) {
@@ -133,6 +148,26 @@ export class AmppResponseRewriterService {
     }
 
     return headers;
+  }
+
+  private isCacheableStaticResource(
+    response: AmppCookieHttpResponse,
+    contentType: string,
+  ): boolean {
+    if (![200, 304].includes(response.status) ||
+        response.headers['set-cookie'] || response.headers['content-range'] ||
+        /(?:no-store|private)/i.test(this.headerValue(response.headers['cache-control']))) {
+      return false;
+    }
+
+    const path = new URL(response.url).pathname;
+    if (!/^\/(?:app\/wrapper\/|gvui\/dist\/|cluster\/systemdashboard\/)/i.test(path) ||
+        !/\.(?:js|mjs|css)$/i.test(path)) {
+      return false;
+    }
+
+    return response.status === 304 ||
+      /(?:javascript|ecmascript|text\/css)/i.test(contentType);
   }
 
   private createApiBrowserHeaders(
@@ -188,21 +223,19 @@ export class AmppResponseRewriterService {
     contentType: string,
     body: Buffer,
   ): Buffer {
-    if (!body.length || !this.isTextContent(contentType)) {
-      return body;
-    }
-
-    const text = body.toString('utf8');
+    // HTML and CSS need rewriting; JavaScript and all other resources can be
+    // returned as the original Buffer without unnecessary UTF-8 decoding.
+    if (!body.length) return body;
 
     if (/text\/html|application\/xhtml\+xml/i.test(contentType)) {
       return Buffer.from(
-        this.rewriteHtml(text, responseUrl, workloadId, publicOrigin),
+        this.rewriteHtml(body.toString('utf8'), responseUrl, workloadId, publicOrigin),
       );
     }
 
     if (/text\/css/i.test(contentType)) {
       return Buffer.from(
-        this.rewriteCss(text, responseUrl, workloadId, publicOrigin),
+        this.rewriteCss(body.toString('utf8'), responseUrl, workloadId, publicOrigin),
       );
     }
 
@@ -542,13 +575,19 @@ export class AmppResponseRewriterService {
         }
       });
 
-    if (
-      segments.length >= 5 &&
-      segments[0].toLowerCase() === 'app' &&
-      segments[1].toLowerCase() === 'wrapper' &&
-      segments[2].toLowerCase() === 'single'
-    ) {
-      return segments[4];
+    if (segments[0]?.toLowerCase() === 'app' &&
+        segments[1]?.toLowerCase() === 'wrapper') {
+      if (segments[2]?.toLowerCase() === 'single' ||
+          (segments[2]?.toLowerCase() === 'embedded' &&
+           segments[3]?.toLowerCase() === 'single')) {
+        return segments[segments[2].toLowerCase() === 'single' ? 4 : 5];
+      }
+      if (segments[2]?.toLowerCase() === 'embedded' &&
+          segments[3]?.toLowerCase() === 'callback' &&
+          segments[4]?.toLowerCase() === 'embedded' &&
+          segments[5]?.toLowerCase() === 'single') {
+        return segments[7];
+      }
     }
 
     if (
@@ -608,6 +647,7 @@ a[href*="/cluster/store/announcements"],
     const responsePath = new URL(responseUrl);
     const values = {
       upstreamDocumentPath: `${responsePath.pathname}${responsePath.search}`,
+      gvuiDocument: responsePath.pathname.startsWith('/gvui/'),
       upstreamHttpOrigin: this.platformUrl.origin,
       upstreamWsOrigin: this.platformUrl.origin.replace(/^http/i, 'ws'),
       httpProxyPath: `/api/ampp-proxy/ui/${encodeURIComponent(workloadId)}`,
@@ -622,16 +662,20 @@ const proxyApiBase=window.location.origin+c.apiProxyPath;
 const proxyWsOrigin=window.location.origin.replace(/^http/i,'ws');
 const proxyWsBase=proxyWsOrigin+c.wsProxyPath;
 const amppRootPaths=['/app/','/identity/','/assets/','/static/','/mocha/','/ampp/control/','/cluster/systemdashboard/'];
+if(c.gvuiDocument)amppRootPaths.push('/gvui/');
 const isAmppRootPath=function(path){return amppRootPaths.some(function(prefix){return path.startsWith(prefix);});};
 const isAmppApiPath=function(path){return /^\\/(?:api|graphql)(?:\\/|$)/i.test(path)||/^\\/(?:discovery|configuration|identity|notifications|logging|hubmanager)\\/api(?:\\/|$)/i.test(path)||/^\\/ampp\\/control\\/api(?:\\/|$)/i.test(path)||/^\\/cluster\\/(?:store|state|matrix|control|fabric|snapshot)\\/api(?:\\/|$)/i.test(path)||/^\\/mocha\\/application\\/[^/]+\\/api(?:\\/|$)/i.test(path);};
-const getUiTargetWorkloadId=function(path){try{const segments=String(path).split('/').filter(Boolean).map(function(segment){try{return decodeURIComponent(segment);}catch{return segment;}});if(segments.length>=5&&segments[0].toLowerCase()==='app'&&segments[1].toLowerCase()==='wrapper'&&segments[2].toLowerCase()==='single')return segments[4];if(segments.length>=3&&segments[0].toLowerCase()==='mocha'&&segments[1].toLowerCase()==='application')return segments[2];}catch{}return undefined;};
+const getUiTargetWorkloadId=function(path){try{const s=String(path).split('/').filter(Boolean).map(function(v){try{return decodeURIComponent(v);}catch{return v;}});if(s[0]==='app'&&s[1]==='wrapper'){if(s[2]==='single')return s[4];if(s[2]==='embedded'&&s[3]==='single')return s[5];if(s[2]==='embedded'&&s[3]==='callback'&&s[4]==='embedded'&&s[5]==='single')return s[7];}if(s[0]==='mocha'&&s[1]==='application')return s[2];}catch{}return undefined;};
 const proxyBaseForPath=function(path){const targetWorkloadId=getUiTargetWorkloadId(path);if(!targetWorkloadId)return isAmppApiPath(path)?proxyApiBase:proxyHttpBase;const route=isAmppApiPath(path)?'/api/ampp-proxy/api/':'/api/ampp-proxy/ui/';return window.location.origin+route+encodeURIComponent(targetWorkloadId);};
 const stripUiProxyPath=function(value){return String(value).split(c.httpProxyPath).join('');};
 
 const normalizeAuthorizeUrl=function(url){const path=url.pathname.startsWith(c.httpProxyPath)?url.pathname.slice(c.httpProxyPath.length)||'/':url.pathname;if(path.toLowerCase()!=='/identity/connect/authorize')return url;const redirectUri=url.searchParams.get('redirect_uri');if(redirectUri){try{const callback=new URL(redirectUri,c.upstreamHttpOrigin);const callbackPath=stripUiProxyPath(callback.pathname)||'/';url.searchParams.set('redirect_uri',new URL(callbackPath+callback.search+callback.hash,c.upstreamHttpOrigin).toString());}catch{}}const state=url.searchParams.get('state');if(state){try{const parsed=JSON.parse(state);if(parsed&&typeof parsed==='object'&&typeof parsed.to==='string'){parsed.to=stripUiProxyPath(parsed.to);url.searchParams.set('state',JSON.stringify(parsed));}}catch{}}return url;};
 const rewriteHttp=function(value){try{if(value===undefined||value===null)return value;const raw=String(value);const u=normalizeAuthorizeUrl(new URL(raw,c.upstreamHttpOrigin+c.upstreamDocumentPath));if(u.origin===window.location.origin){if(u.pathname.startsWith(c.httpProxyPath)){const upstreamPath=u.pathname.slice(c.httpProxyPath.length)||'/';return proxyBaseForPath(upstreamPath)+upstreamPath+u.search+u.hash;}if(/^\\/api\\/ampp-proxy\\/(?:ui|api|ws)\\//i.test(u.pathname))return u.toString();if(isAmppApiPath(u.pathname))return proxyBaseForPath(u.pathname)+u.pathname+u.search+u.hash;return isAmppRootPath(u.pathname)?proxyBaseForPath(u.pathname)+u.pathname+u.search+u.hash:raw;}if(u.origin!==c.upstreamHttpOrigin)return raw;return proxyBaseForPath(u.pathname)+u.pathname+u.search+u.hash;}catch{return value;}};
 const rewriteWs=function(value){try{if(value===undefined||value===null)return value;const raw=String(value);const u=new URL(raw,c.upstreamWsOrigin+c.upstreamDocumentPath);if(u.host===window.location.host){if(u.pathname.startsWith(c.httpProxyPath)){const upstreamPath=u.pathname.slice(c.httpProxyPath.length)||'/';return proxyWsBase+upstreamPath+u.search+u.hash;}if(u.pathname.startsWith(c.wsProxyPath))return proxyWsOrigin+u.pathname+u.search+u.hash;return raw;}if(u.host!==new URL(c.upstreamWsOrigin).host)return raw;return proxyWsBase+u.pathname+u.search+u.hash;}catch{return value;}};
-const patchConfig=function(config){if(!config||typeof config!=='object')return config;const originalProxyPath=typeof config.proxyPath==='string'?config.proxyPath:'';const proxyPath=originalProxyPath.startsWith(c.httpProxyPath)?originalProxyPath:c.httpProxyPath+originalProxyPath;const configValues={baseUri:window.location.origin,proxyPath:proxyPath,platformUri:proxyHttpBase,clusterUri:proxyHttpBase};for(const key of Object.keys(configValues)){const value=configValues[key];try{const descriptor=Object.getOwnPropertyDescriptor(config,key);if(!descriptor||descriptor.configurable){Object.defineProperty(config,key,{configurable:true,enumerable:descriptor?descriptor.enumerable:true,get:function(){return value;},set:function(){}});}else{config[key]=value;}}catch{try{config[key]=value;}catch{}}}return config;};
+const patchConfig=function(config){if(!config||typeof config!=='object')return config;const originalProxyPath=typeof config.proxyPath==='string'?config.proxyPath:'';const proxyPath=originalProxyPath.startsWith(c.httpProxyPath)?originalProxyPath:c.httpProxyPath+originalProxyPath;const configValues={baseUri:window.location.origin,proxyPath:proxyPath,platformUri:proxyHttpBase};
+// GV.UI has no clusterUri; injecting one adds an unauthorized cluster.readonly OAuth scope.
+if(!c.gvuiDocument||config.clusterUri)configValues.clusterUri=proxyHttpBase;
+for(const key of Object.keys(configValues)){const value=configValues[key];try{const descriptor=Object.getOwnPropertyDescriptor(config,key);if(!descriptor||descriptor.configurable){Object.defineProperty(config,key,{configurable:true,enumerable:descriptor?descriptor.enumerable:true,get:function(){return value;},set:function(){}});}else{config[key]=value;}}catch{try{config[key]=value;}catch{}}}return config;};
 let gvConfig=patchConfig(window.__GVCONFIG__);try{Object.defineProperty(window,'__GVCONFIG__',{configurable:true,enumerable:true,get:function(){return gvConfig;},set:function(value){gvConfig=patchConfig(value);}});}catch{if(window.__GVCONFIG__)patchConfig(window.__GVCONFIG__);}
 const nativeFetch=window.fetch.bind(window);window.fetch=function(input,init){if(input instanceof Request){const url=rewriteHttp(input.url);return nativeFetch(url===input.url?input:new Request(url,input),init);}return nativeFetch(rewriteHttp(input),init);};
 const nativeOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url){arguments[1]=rewriteHttp(url);return nativeOpen.apply(this,arguments);};
@@ -656,12 +700,6 @@ document.addEventListener('submit',function(event){const form=event.target;if(fo
     }
 
     return `${value}${html}`;
-  }
-
-  private isTextContent(contentType: string): boolean {
-    return /^(?:text\/|application\/(?:javascript|json|manifest\+json|xhtml\+xml|xml)|image\/svg\+xml)/i.test(
-      contentType,
-    );
   }
 
   private headerValue(
