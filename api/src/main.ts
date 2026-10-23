@@ -8,6 +8,7 @@ import session from 'express-session';
 import { NestExpressApplication } from '@nestjs/platform-express';
 
 import { MysqlSessionStore } from './auth/mysql-session.store';
+import { SESSION_MAX_AGE, sessionCookieSettings } from './auth/session-cookie';
 
 import { AppModule } from './app.module';
 import { AmppWebSocketProxyService } from './ampp-proxy/ampp-websocket-proxy.service';
@@ -48,7 +49,7 @@ async function bootstrap() {
     throw new Error('SESSION_SECRET must be set and at least 32 characters long');
   }
 
-  const sessionCookieName = config.get<string>('SESSION_COOKIE_NAME') ?? 'amvvpp.sid';
+  const sessionCookie = sessionCookieSettings(config);
   const sessionStore = new MysqlSessionStore({
     host: config.get<string>('MYSQL_HOST'),
     port: Number(config.get<string>('MYSQL_PORT') ?? 3306),
@@ -59,16 +60,14 @@ async function bootstrap() {
 
   const sessionMiddleware = session({
     store: sessionStore,
-    name: sessionCookieName,
+    name: sessionCookie.name,
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
     rolling: true,
     cookie: {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: 'lax',
-      maxAge: 1000 * 60 * 60 * 8,
+      ...sessionCookie.cookie,
+      maxAge: SESSION_MAX_AGE,
     },
   });
 

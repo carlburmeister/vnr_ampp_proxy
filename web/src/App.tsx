@@ -1,109 +1,136 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import './App.css';
 import { LoginPage } from './components/LoginPage';
 import { UserHomePage } from './components/UserHomePage';
 import { renderWorkloadApplicationRoute } from './utils/workloadApplicationRoutes';
-import { logoutUser, type LoginResponse } from './services/authApi';
+import { logoutUser } from './services/authApi';
 import { getCurrentSession, type SessionData } from './services/amppSessionApi';
 
 function App() {
   
   const sessionGeneration = useRef(0);
+  const sessionRequest = useRef<AbortController | null>(null);
+  const expiryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const loggingOut = useRef(false);
   const [currentSession, setCurrentSession] = useState<SessionData | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    let pending = false;
-    let initialCheckDone = false;
+  const invalidateRequests = useCallback(() => {
+    sessionGeneration.current += 1;
+    sessionRequest.current?.abort();
+    sessionRequest.current = null;
+    clearTimeout(expiryTimer.current);
+  }, []);
 
-    async function loadCurrentSession() {
-      if (pending) return;
-      pending = true;
-      const generation = sessionGeneration.current;
-      try {
-        const session = await getCurrentSession();
-
-        if (!cancelled && generation === sessionGeneration.current) {
-          setCurrentSession((previous) => JSON.stringify(previous) === JSON.stringify(session) ? previous : session);
-          setAuthError('');
-        }
-      } catch (err) {
-        if (!cancelled && !initialCheckDone && generation === sessionGeneration.current) {
-          setAuthError(err instanceof Error ? err.message : 'Unknown auth error');
-        }
-      } finally {
-        pending = false;
-        initialCheckDone = true;
-        if (!cancelled) {
-          setAuthChecked(true);
-        }
+  const loadCurrentSession = useCallback(async (replacePending = false) => {
+    if (loggingOut.current) return;
+    if (sessionRequest.current && !replacePending) return;
+    if (replacePending) invalidateRequests();
+    const controller = new AbortController();
+    sessionRequest.current = controller;
+    const generation = sessionGeneration.current;
+    try {
+      const session = await getCurrentSession(controller.signal);
+      if (generation !== sessionGeneration.current) return;
+      if (!session) {
+        invalidateRequests();
+        setCurrentSession(null);
+      } else {
+        setCurrentSession((previous) => JSON.stringify(previous) === JSON.stringify(session) ? previous : session);
       }
+      setAuthError('');
+      setAuthChecked(true);
+      return session;
+    } catch {
+      if (generation !== sessionGeneration.current) return;
+      setAuthError('Unable to verify your session. Check your connection and retry.');
+      setAuthChecked(true);
+    } finally {
+      if (sessionRequest.current === controller) sessionRequest.current = null;
     }
+  }, [invalidateRequests]);
 
-    void loadCurrentSession();
+  useEffect(() => {
+    const generation = sessionGeneration.current;
+    void Promise.resolve().then(() => {
+      if (generation === sessionGeneration.current) return loadCurrentSession();
+    });
+
+    const onResume = () => {
+      if (!document.hidden) {
+        setAuthChecked(false);
+        void loadCurrentSession(true);
+      }
+    };
 
     // Refresh displayed access when another admin changes permissions.
     const timer = window.setInterval(() => {
-      if (!cancelled && !document.hidden) void loadCurrentSession();
+      if (!document.hidden) void loadCurrentSession();
     }, 10000);
-    const onFocus = () => { if (!cancelled && !pending) void loadCurrentSession(); };
-    window.addEventListener('focus', onFocus);
+    window.addEventListener('focus', onResume);
+    window.addEventListener('pageshow', onResume);
+    document.addEventListener('visibilitychange', onResume);
 
     return () => {
-      cancelled = true;
+      invalidateRequests();
       window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('focus', onResume);
+      window.removeEventListener('pageshow', onResume);
+      document.removeEventListener('visibilitychange', onResume);
     };
-  }, []);
+  }, [invalidateRequests, loadCurrentSession]);
+
+  useEffect(() => {
+    clearTimeout(expiryTimer.current);
+    if (!currentSession || authError) return;
+    // Another tab can renew the same session: verify at the known deadline
+    // instead of assuming that this tab's last deadline is still authoritative.
+    expiryTimer.current = setTimeout(() => {
+      setAuthChecked(false);
+      if (!document.hidden) void loadCurrentSession(true);
+    }, Math.max(0, currentSession.expiresAt - Date.now()));
+    return () => clearTimeout(expiryTimer.current);
+  }, [currentSession, authError, loadCurrentSession]);
   
   /*-------------------------------------------------------------*/
   //  refreshOwnPermissions()
   /*-------------------------------------------------------------*/
   async function refreshOwnPermissions() {
-    const session = await getCurrentSession();
-    setCurrentSession((previous) => JSON.stringify(previous) === JSON.stringify(session) ? previous : session);
+    await loadCurrentSession(true);
   }
 
   /*-------------------------------------------------------------*/
   //  handleLogin()
   /*-------------------------------------------------------------*/
-  async function handleLogin(_result: LoginResponse) 
+  async function handleLogin()
   {
-    sessionGeneration.current += 1;
-    const session = await getCurrentSession();
-
-    if (!session) {
-      throw new Error('Login succeeded, but the session could not be loaded');
-    }
-
-    setCurrentSession(session);
-    setAuthError('');
+    setAuthChecked(false);
+    const session = await loadCurrentSession(true);
+    if (!session) throw new Error('Login succeeded, but the session could not be loaded');
   }
   /*-------------------------------------------------------------*/
   //  handleLogout()
   /*-------------------------------------------------------------*/
   async function handleLogout() 
   {
-    sessionGeneration.current += 1;
+    loggingOut.current = true;
+    invalidateRequests();
+    setCurrentSession(null);
+    setAuthError('');
+    setAuthChecked(false);
     try {
       await logoutUser();
+    } catch {
+      setAuthError('Sign out could not be confirmed. Check your connection and retry.');
     } finally {
-      setCurrentSession(null);
+      loggingOut.current = false;
+      setAuthChecked(true);
     }
   }
 
-
-  if (!authChecked) {
-    return (
-      <main className="app-shell">
-        <p>Checking session...</p>
-      </main>
-    );
-  }
-
+  const restricted = !authChecked || Boolean(authError);
   const workloadApplicationRoute = renderWorkloadApplicationRoute(window.location.pathname);
   const routeWorkloadId = new URLSearchParams(window.location.search).get('workloadId');
   const authorizedRoute = !routeWorkloadId || currentSession?.allowedWorkloads.some((workload) =>
@@ -111,16 +138,20 @@ function App() {
   );
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" role={authChecked && authError ? 'alert' : undefined}>
+      {!authChecked ? <p>Checking session...</p> : authError ? (
+        <section>
+          <p>{authError}</p>
+          <button onClick={() => { setAuthChecked(false); void loadCurrentSession(true); }}>Retry session check</button>
+          <button onClick={() => { void handleLogout(); }}>Sign out</button>
+        </section>
+      ) : null}
       {currentSession ? (
-        (authorizedRoute ? workloadApplicationRoute : null) ?? <UserHomePage session={currentSession} onLogout={handleLogout}
-          onPermissionsSaved={() => { void refreshOwnPermissions().catch(console.error); }} />
-      ) : (
-        <>
-          {authError && <p style={{ color: 'red' }}>{authError}</p>}
-          <LoginPage onLogin={handleLogin} />
-        </>
-      )}
+        <div hidden={restricted} inert={restricted}>
+          {(authorizedRoute ? workloadApplicationRoute : null) ?? <UserHomePage session={currentSession} onLogout={handleLogout}
+            onPermissionsSaved={() => { void refreshOwnPermissions().catch(console.error); }} />}
+        </div>
+      ) : !restricted && <LoginPage onLogin={handleLogin} />}
     </main>
   );
 }
