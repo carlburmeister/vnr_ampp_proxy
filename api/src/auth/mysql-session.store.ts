@@ -1,4 +1,6 @@
 import session from 'express-session';
+import { Logger } from '@nestjs/common';
+import { SESSION_MAX_AGE } from './session-cookie';
 import {
   createPool,
   type Pool,
@@ -16,11 +18,20 @@ export type MysqlSessionStoreOptions = {
 
 type SessionRow = RowDataPacket & {
   data: string;
+  expires_at: number;
 };
+
+export class SessionExpiredError extends Error {
+  constructor() {
+    super('Session expired or revoked');
+  }
+}
 
 export class MysqlSessionStore extends session.Store {
   private readonly pool: Pool;
   private readonly ready: Promise<void>;
+  private readonly cleanupTimer: NodeJS.Timeout;
+  private cleaning = false;
 
   constructor(options: MysqlSessionStoreOptions) {
     super();
@@ -37,6 +48,19 @@ export class MysqlSessionStore extends session.Store {
     });
 
     this.ready = this.initialize();
+    this.cleanupTimer = setInterval(() => {
+      if (this.cleaning) return;
+      this.cleaning = true;
+      void this.ready
+        .then(() => this.deleteExpiredSessions())
+        .catch(() =>
+          Logger.warn('Expired session cleanup failed; will retry', 'MysqlSessionStore'),
+        )
+        .finally(() => {
+          this.cleaning = false;
+        });
+    }, 60000);
+    this.cleanupTimer.unref();
   }
 
   async get(
@@ -47,7 +71,7 @@ export class MysqlSessionStore extends session.Store {
       await this.ready;
 
       const [rows] = await this.pool.execute<SessionRow[]>(
-        `SELECT data
+        `SELECT data, expires_at
          FROM user_sessions
          WHERE session_id = ? AND expires_at > ?
          LIMIT 1`,
@@ -55,11 +79,19 @@ export class MysqlSessionStore extends session.Store {
       );
 
       if (!rows.length) {
+        // The predicate also protects a session renewed by a concurrent request.
+        await this.pool.execute<ResultSetHeader>(
+          `DELETE FROM user_sessions WHERE session_id = ? AND expires_at <= ?`,
+          [sid, Date.now()],
+        );
         callback(null, null);
         return;
       }
 
-      callback(null, JSON.parse(rows[0].data) as session.SessionData);
+      const data = JSON.parse(rows[0].data) as session.SessionData;
+      // touch() renews the indexed deadline without rewriting the JSON blob.
+      data.cookie.expires = new Date(Number(rows[0].expires_at));
+      callback(null, data);
     } catch (error) {
       callback(error);
     }
@@ -73,17 +105,31 @@ export class MysqlSessionStore extends session.Store {
     try {
       await this.ready;
 
-      await this.pool.execute<ResultSetHeader>(
-        `INSERT INTO user_sessions (session_id, expires_at, data)
-         VALUES (?, ?, ?)
-         ON DUPLICATE KEY UPDATE expires_at = VALUES(expires_at), data = VALUES(data)`,
-        [sid, this.getExpiresAt(sessionData), JSON.stringify(sessionData)],
+      const [result] = await this.pool.execute<ResultSetHeader>(
+        `UPDATE user_sessions
+         SET expires_at = GREATEST(expires_at, ?), data = ?
+         WHERE session_id = ? AND expires_at > ?`,
+        [
+          this.getExpiresAt(sessionData),
+          JSON.stringify(sessionData),
+          sid,
+          Date.now(),
+        ],
       );
+      if (!result.affectedRows) throw new SessionExpiredError();
 
       callback?.();
     } catch (error) {
       callback?.(error);
     }
+  }
+
+  async create(sid: string, sessionData: session.SessionData) {
+    await this.ready;
+    await this.pool.execute<ResultSetHeader>(
+      `INSERT INTO user_sessions (session_id, expires_at, data) VALUES (?, ?, ?)`,
+      [sid, this.getExpiresAt(sessionData), JSON.stringify(sessionData)],
+    );
   }
 
   async destroy(sid: string, callback?: (error?: any) => void) {
@@ -109,10 +155,12 @@ export class MysqlSessionStore extends session.Store {
     try {
       await this.ready;
 
-      await this.pool.execute<ResultSetHeader>(
-        `UPDATE user_sessions SET expires_at = ? WHERE session_id = ?`,
-        [this.getExpiresAt(sessionData), sid],
+      const [result] = await this.pool.execute<ResultSetHeader>(
+        `UPDATE user_sessions SET expires_at = GREATEST(expires_at, ?)
+         WHERE session_id = ? AND expires_at > ?`,
+        [this.getExpiresAt(sessionData), sid, Date.now()],
       );
+      if (!result.affectedRows) throw new SessionExpiredError();
 
       callback?.();
     } catch (error) {
@@ -121,6 +169,7 @@ export class MysqlSessionStore extends session.Store {
   }
 
   async close() {
+    clearInterval(this.cleanupTimer);
     await this.pool.end();
   }
 
@@ -142,7 +191,7 @@ export class MysqlSessionStore extends session.Store {
 
   private async deleteExpiredSessions() {
     await this.pool.execute<ResultSetHeader>(
-      `DELETE FROM user_sessions WHERE expires_at <= ?`,
+      `DELETE FROM user_sessions WHERE expires_at <= ? LIMIT 1000`,
       [Date.now()],
     );
   }
@@ -156,6 +205,6 @@ export class MysqlSessionStore extends session.Store {
       return Date.now() + sessionData.cookie.maxAge;
     }
 
-    return Date.now() + 1000 * 60 * 60 * 8;
+    return Date.now() + SESSION_MAX_AGE;
   }
 }

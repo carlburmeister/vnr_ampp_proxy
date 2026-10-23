@@ -10,17 +10,21 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { ConfigService } from '@nestjs/config';
 
 import { LoginDto } from './dto/login.dto';
 import { AuthService } from './auth.service';
 import { SessionAuthGuard } from './session-auth.guard';
-
-const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME ?? 'amvvpp.sid';
+import { MysqlSessionStore } from './mysql-session.store';
+import { clearSessionCookie } from './session-cookie';
 
 @Controller('auth')
 export class AuthController {
   
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly config: ConfigService,
+  ) {}
 
   /*-------------------------------------------------------------*/
   //  login()
@@ -44,6 +48,12 @@ export class AuthController {
     });
 
     this.auth.applyAuthorization(req.session, result);
+
+    // Only a successful login may create a row. Ordinary saves must never
+    // recreate a session removed by logout, revocation, or expiry.
+    const store = req.sessionStore;
+    if (!(store instanceof MysqlSessionStore)) throw new Error('Login requires MysqlSessionStore');
+    await store.create(req.sessionID, req.session);
 
     await new Promise<void>((resolve, reject) => {
       req.session.save((error) => {
@@ -89,6 +99,6 @@ export class AuthController {
       });
     });
 
-    res.clearCookie(SESSION_COOKIE_NAME);
+    clearSessionCookie(res, this.config);
   }
 }

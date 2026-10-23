@@ -63,6 +63,7 @@ export async function logoutUser(): Promise<void> {
   const response = await fetch('/api/auth/logout', {
     method: 'POST',
     credentials: 'include',
+    signal: AbortSignal.timeout(10000),
   });
 
   if (!response.ok) {

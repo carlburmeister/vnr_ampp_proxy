@@ -50,52 +50,55 @@ export class AmppProxySessionService {
       .then(async () => {
         const latest = await this.getStoredSession(req);
 
-        if (latest) {
-          // Another request may have refreshed permissions while this request
-          // was proxied. Never overwrite that newer authorization snapshot.
-          if (latest.authorizationFingerprint !== req.session.authorizationFingerprint) {
-            for (const key of [
-              'user', 'parentWorkloadId', 'fabricId', 'nodeId',
-              'allowedWorkloads', 'allowedDashboardIds', 'allowedDashboards',
-              'amppAllowedWorkloadIds', 'amppResourceWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
-              'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
-            ] as const) {
-              (req.session as any)[key] = this.clone(latest[key]);
-            }
-            // Do not merge data derived under revoked permissions.
-            return;
-          }
-          req.session.authorizationCheckedAt = latest.authorizationCheckedAt;
-          for (const key of SESSION_KEYS) {
-            if (!changedKeys.includes(key)) {
-              this.setValue(req.session, key, latest[key]);
-            }
-          }
+        if (!latest) {
+          // Do not let a delayed upstream response recreate a logged-out session.
+          return;
+        }
 
-          if (changedKeys.includes('amppMatrixAccess')) {
-            req.session.amppMatrixAccess = this.mergeMatrixAccess(
-              snapshot.values.amppMatrixAccess,
-              current.amppMatrixAccess,
-              latest.amppMatrixAccess,
+        // Another request may have refreshed permissions while this request
+        // was proxied. Never overwrite that newer authorization snapshot.
+        if (latest.authorizationFingerprint !== req.session.authorizationFingerprint) {
+          for (const key of [
+            'user', 'parentWorkloadId', 'fabricId', 'nodeId',
+            'allowedWorkloads', 'allowedDashboardIds', 'allowedDashboards',
+            'amppAllowedWorkloadIds', 'amppResourceWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
+            'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
+          ] as const) {
+            (req.session as any)[key] = this.clone(latest[key]);
+          }
+          // Do not merge data derived under revoked permissions.
+          return;
+        }
+        req.session.authorizationCheckedAt = latest.authorizationCheckedAt;
+        for (const key of SESSION_KEYS) {
+          if (!changedKeys.includes(key)) {
+            this.setValue(req.session, key, latest[key]);
+          }
+        }
+
+        if (changedKeys.includes('amppMatrixAccess')) {
+          req.session.amppMatrixAccess = this.mergeMatrixAccess(
+            snapshot.values.amppMatrixAccess,
+            current.amppMatrixAccess,
+            latest.amppMatrixAccess,
+          );
+        }
+
+        if (changedKeys.includes('amppDashboardMatrixAccess')) {
+          req.session.amppDashboardMatrixAccess =
+            this.mergeDashboardMatrixAccess(
+              snapshot.values.amppDashboardMatrixAccess,
+              current.amppDashboardMatrixAccess,
+              latest.amppDashboardMatrixAccess,
             );
-          }
+        }
 
-          if (changedKeys.includes('amppDashboardMatrixAccess')) {
-            req.session.amppDashboardMatrixAccess =
-              this.mergeDashboardMatrixAccess(
-                snapshot.values.amppDashboardMatrixAccess,
-                current.amppDashboardMatrixAccess,
-                latest.amppDashboardMatrixAccess,
-              );
-          }
-
-          if (changedKeys.includes('amppNotificationMailboxIds')) {
-            req.session.amppNotificationMailboxIds = this.mergeIds(
-              latest.amppNotificationMailboxIds,
-              snapshot.values.amppNotificationMailboxIds,
-              current.amppNotificationMailboxIds,
-            );
-          }
+        if (changedKeys.includes('amppNotificationMailboxIds')) {
+          req.session.amppNotificationMailboxIds = this.mergeIds(
+            latest.amppNotificationMailboxIds,
+            snapshot.values.amppNotificationMailboxIds,
+            current.amppNotificationMailboxIds,
+          );
         }
 
         await this.saveSession(req);
@@ -328,6 +331,7 @@ export class AmppProxySessionService {
   }
 
   private saveSession(req: Request): Promise<void> {
+    req.session.touch();
     return new Promise<void>((resolve, reject) => {
       req.session.save((error) => {
         if (error) {
