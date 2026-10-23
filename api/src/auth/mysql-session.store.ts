@@ -54,7 +54,10 @@ export class MysqlSessionStore extends session.Store {
       void this.ready
         .then(() => this.deleteExpiredSessions())
         .catch(() =>
-          Logger.warn('Expired session cleanup failed; will retry', 'MysqlSessionStore'),
+          Logger.warn(
+            'Expired session cleanup failed; will retry',
+            'MysqlSessionStore',
+          ),
         )
         .finally(() => {
           this.cleaning = false;

@@ -52,7 +52,8 @@ export class AuthController {
     // Only a successful login may create a row. Ordinary saves must never
     // recreate a session removed by logout, revocation, or expiry.
     const store = req.sessionStore;
-    if (!(store instanceof MysqlSessionStore)) throw new Error('Login requires MysqlSessionStore');
+    if (!(store instanceof MysqlSessionStore))
+      throw new Error('Login requires MysqlSessionStore');
     await store.create(req.sessionID, req.session);
 
     await new Promise<void>((resolve, reject) => {
