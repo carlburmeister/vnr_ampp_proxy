@@ -33,22 +33,19 @@ export type GvuiPreparedRequest = {
 };
 
 @Injectable()
-export class GvuiPhase2Service {
+export class GvuiProxyService {
   private readonly origin: string;
   // Raw configurations are shared metadata, never shared authorization decisions.
   // Every use rechecks this session's effective layout AND component permissions.
   private readonly layouts = new Map<string, GvuiConfiguration>();
 
   constructor(
-    private readonly config: ConfigService,
+    config: ConfigService,
     private readonly ampp: AmppControlService,
   ) {
     this.origin = new URL(config.getOrThrow<string>('PLATFORM_URL')).origin;
   }
 
-  get enabled() {
-    return this.config.get<string>('GVUI_PHASE2_ENABLED') === 'true';
-  }
   isContext(id: string) {
     return id.startsWith('gvui-');
   }
@@ -56,8 +53,6 @@ export class GvuiPhase2Service {
   private layoutId(session: SessionData, contextId: string): string {
     const id = contextId.slice(5).toLowerCase();
     if (
-      !this.enabled ||
-      !session.gvuiPhase2Enabled ||
       !this.isContext(contextId) ||
       !UUID.test(id) ||
       !session.allowedGvuiLayoutIds?.some(
@@ -125,7 +120,7 @@ export class GvuiPhase2Service {
     if (!filtered) {
       this.layouts.delete(layoutId);
       throw new ConflictException(
-        'This layout is missing, unsupported, or has no accessible workload components.',
+        'This layout is missing, unsupported, or has no accessible components with a permitted workload context.',
       );
     }
     if (this.layouts.size >= 512 && !this.layouts.has(layoutId)) {
@@ -166,6 +161,7 @@ export class GvuiPhase2Service {
     contextId: string,
     path: string,
     response: AmppCookieHttpResponse,
+    proxyOrigin?: string,
   ): AmppCookieHttpResponse {
     const target = new URL(path, this.origin);
     if (
@@ -186,7 +182,8 @@ export class GvuiPhase2Service {
       if (record) this.layouts.set(id, record);
       else this.layouts.delete(id);
       const filtered =
-        record && permittedComponents(record, session, this.origin);
+        record &&
+        permittedComponents(record, session, this.origin, proxyOrigin);
       return replaceJson(response, filtered ? [filtered.item] : []);
     }
     if (
@@ -210,7 +207,12 @@ export class GvuiPhase2Service {
             return this.isContext(contextId) ? [] : [item];
           if (!event.topic.toLowerCase().startsWith('gv.ui.notifications.'))
             return this.isContext(contextId) ? [] : [item];
-          const filtered = this.notification(session, contextId, event);
+          const filtered = this.notification(
+            session,
+            contextId,
+            event,
+            proxyOrigin,
+          );
           return filtered ? [filtered] : [];
         }),
       );
@@ -222,6 +224,7 @@ export class GvuiPhase2Service {
     session: SessionData,
     contextId: string,
     event: JsonObject,
+    proxyOrigin?: string,
   ): JsonObject | undefined {
     try {
       const id = this.layoutId(session, contextId);
@@ -246,7 +249,12 @@ export class GvuiPhase2Service {
           event.topic !== `gv.ui.notifications.${id}`)
       )
         return;
-      const filtered = permittedComponents(record, session, this.origin);
+      const filtered = permittedComponents(
+        record,
+        session,
+        this.origin,
+        proxyOrigin,
+      );
       if (!filtered) return;
       return {
         ...event,

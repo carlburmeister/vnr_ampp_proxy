@@ -26,7 +26,6 @@ export type ClientResources = {
   workloads: ClientWorkload[];
   dashboards: ClientDashboard[];
   gvuiLayouts?: ClientGvuiLayout[];
-  gvuiPhase2Enabled?: boolean;
 };
 
 export type ClientGvuiLayout = {

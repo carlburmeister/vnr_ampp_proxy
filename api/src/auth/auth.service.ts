@@ -36,7 +36,6 @@ export type LoginResult = {
   allowedDashboards: AllowedDashboard[];
   allowedGvuiLayoutIds: string[];
   allowedGvuiLayouts: AllowedGvuiLayout[];
-  gvuiPhase2Enabled: boolean;
   amppAllowedWorkloadIds: string[];
   amppResourceWorkloadIds: string[];
   authorizationFingerprint: string;
@@ -89,7 +88,8 @@ export class AuthService {
     const interval = Math.max(0, Number(
       this.config?.get<string>('AUTH_PERMISSION_REFRESH_INTERVAL_MS') ?? 10000,
     ) || 0);
-    const gvuiSessionCurrent = session.gvuiPhase2Enabled === (this.gvui?.enabled ?? false) &&
+    // Old authorization snapshots must be rebuilt before using permanent GVUI rules.
+    const gvuiSessionCurrent = session.authorizationFingerprint?.startsWith('gvui-v2:') &&
       Array.isArray(session.allowedGvuiLayouts) && Array.isArray(session.allowedGvuiLayoutIds);
     if (session.authorizationCheckedAt &&
         Date.now() - session.authorizationCheckedAt < interval && gvuiSessionCurrent) {
@@ -159,7 +159,6 @@ export class AuthService {
     session.allowedDashboards = result.allowedDashboards;
     session.allowedGvuiLayoutIds = result.allowedGvuiLayoutIds;
     session.allowedGvuiLayouts = result.allowedGvuiLayouts;
-    session.gvuiPhase2Enabled = result.gvuiPhase2Enabled;
     session.amppAllowedWorkloadIds = result.amppAllowedWorkloadIds;
     session.amppResourceWorkloadIds = result.amppResourceWorkloadIds;
     session.authorizationFingerprint = result.authorizationFingerprint;
@@ -307,7 +306,6 @@ export class AuthService {
       allowedDashboards,
       allowedGvuiLayoutIds: allowedGvuiLayouts.map((layout) => layout.id),
       allowedGvuiLayouts,
-      gvuiPhase2Enabled: this.gvui?.enabled ?? false,
       amppAllowedWorkloadIds,
       amppResourceWorkloadIds,
       authorizationFingerprint: this.getFingerprint(user, userDBWorkloads, assignedDashboards, deniedIds, assignedGvuiLayouts),
@@ -325,7 +323,7 @@ export class AuthService {
   ): string {
     const sorted = <T>(items: T[], selector: (item: T) => string) =>
       items.map(selector).sort();
-    return createHash('sha256').update(JSON.stringify({
+    return 'gvui-v2:' + createHash('sha256').update(JSON.stringify({
       clientId: user.clientId,
       userType: user.userType,
       username: user.username,
@@ -333,7 +331,6 @@ export class AuthService {
       workloads: sorted(workloads, (w) => `${w.id.toLowerCase()}:${w.is_parent}:${w.pageType}:${w.name}`),
       dashboards: sorted(dashboards, (d) => `${d.id.toLowerCase()}:${d.associatedWorkloadId?.toLowerCase() ?? ''}:${d.name}:${d.pageType}`),
       denials: denials.map((id) => id.toLowerCase()).sort(),
-      gvuiPhase2Enabled: this.gvui?.enabled ?? false,
       gvuiLayouts: sorted(gvuiLayouts, (g) => `${g.id.toLowerCase()}:${g.associatedWorkloadId?.toLowerCase() ?? ''}:${g.name}`),
     })).digest('hex');
   }

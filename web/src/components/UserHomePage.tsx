@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { UserManagementDialog } from './UserManagementDialog';
-import { GvuiPhase1Button } from '../features/gvui/GvuiPhase1Button';
 import { GvuiLayoutButton } from '../features/gvui/GvuiLayoutButton';
 
 import './UserHomePage.css';
@@ -38,8 +37,8 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
 {  
   const workloads: AllowedWorkload[] = session.allowedWorkloads ?? [];
   const dashboards: AllowedDashboard[] = session.allowedDashboards ?? [];
-  const gvuiLayouts = session.gvuiPhase2Enabled ? [...(session.allowedGvuiLayouts ?? [])]
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })) : [];
+  const gvuiLayouts = [...(session.allowedGvuiLayouts ?? [])]
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const [actionsOpen, setActionsOpen] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
   const [expandedWorkloadIds, setExpandedWorkloadIds] = useState<string[]>([]);
@@ -423,7 +422,6 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
             })}
             {renderDashboardButtons(null)}
             {renderGvuiButtons(null)}
-            {!session.gvuiPhase2Enabled && <GvuiPhase1Button />}
           </div>
         ) : (
           <p>No workloads assigned.</p>

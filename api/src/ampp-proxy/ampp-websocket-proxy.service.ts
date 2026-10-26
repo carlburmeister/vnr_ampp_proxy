@@ -23,7 +23,7 @@ import {
 } from './ampp-proxy-session-debug';
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
-import { GvuiPhase2Service } from './gvui/gvui-phase2.service';
+import { GvuiProxyService } from './gvui/gvui-proxy.service';
 
 type WebSocketData = Buffer | ArrayBuffer | Buffer[] | string;
 
@@ -98,7 +98,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     private readonly matrixFilter: AmppMatrixFilterService,
     private readonly policy: AmppProxyPolicyService,
     private readonly auth: AuthService,
-    private readonly gvui?: GvuiPhase2Service,
+    private readonly gvui?: GvuiProxyService,
   ) {
     this.platformUrl = new URL(
       this.config.getOrThrow<string>('PLATFORM_URL'),
@@ -229,7 +229,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
 
     browser.on('message', (data: WebSocketData) => {
       const isBinary = typeof data !== 'string';
-      if (this.gvui?.enabled && request.session) {
+      if (this.gvui && request.session) {
         const filtered = this.matrixFilter.filterWebSocketMessage(request.session, workloadId, this.toBuffer(data),
           // Existing workload subscriptions are outbound requests, not Matrix
           // update payloads. Apply only GV.UI subscription authorization here.
@@ -327,12 +327,12 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     upstream.on('message', (data: WebSocketData) => {
       const isBinary = typeof data !== 'string';
       const filteredData =
-        (isBinary || this.gvui?.enabled) && request.session
+        (isBinary || this.gvui) && request.session
           ? this.matrixFilter.filterWebSocketMessage(
               request.session,
               workloadId,
               this.toBuffer(data),
-              this.gvui?.enabled ? (strings) => this.gvui!.isHubMessageAllowed(request.session!, workloadId, strings) : undefined,
+              this.gvui ? (strings) => this.gvui!.isHubMessageAllowed(request.session!, workloadId, strings) : undefined,
             )
           : data;
 

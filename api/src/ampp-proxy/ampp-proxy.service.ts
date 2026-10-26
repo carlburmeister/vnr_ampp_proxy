@@ -23,8 +23,7 @@ import { AmppDashboardFilterService } from './ampp-dashboard-filter.service';
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
-import { GvuiPhase1Service } from './gvui/gvui-phase1.service';
-import { GvuiPhase2Service } from './gvui/gvui-phase2.service';
+import { GvuiProxyService } from './gvui/gvui-proxy.service';
 import { filterDiscoveryNodeResponse } from './ampp-discovery-filter';
 
 @Injectable()
@@ -41,8 +40,7 @@ export class AmppProxyService {
     private readonly responseRewriter: AmppResponseRewriterService,
     private readonly sessionBroker: AmppSessionBrokerService,
     private readonly utilityLogin: AmppUtilityLoginService,
-    private readonly gvui: GvuiPhase1Service,
-    private readonly phase2?: GvuiPhase2Service,
+    private readonly gvui: GvuiProxyService,
   ) {
     this.platformUrl = new URL(
       this.config.getOrThrow<string>('PLATFORM_URL'),
@@ -143,9 +141,7 @@ export class AmppProxyService {
       session,
       upstreamPath,
     );
-    const prepared = this.phase2?.enabled
-      ? this.phase2.prepareApiRequest(session, workloadId, method, upstreamPath, body)
-      : { path: upstreamPath, body };
+    const prepared = this.gvui.prepareApiRequest(session, workloadId, method, upstreamPath, body);
     const sessionToken = this.bearerToken.getSessionToken(session);
     let token = sessionToken ?? (await this.bearerToken.getToken());
     let response = await this.requestApiResource(
@@ -176,7 +172,7 @@ export class AmppProxyService {
       );
     }
 
-    if (this.phase2?.enabled) response = this.phase2.completeApiRequest(session, workloadId, prepared, response);
+    response = this.gvui.completeApiRequest(session, workloadId, prepared, response);
     this.captureAmppUserId(session, upstreamPath, response);
     this.captureNotificationMailbox(session, method, upstreamPath, response);
 
@@ -192,7 +188,7 @@ export class AmppProxyService {
       upstreamPath,
       response,
     );
-    response = this.gvui.filterCatalog(session, workloadId, upstreamPath, response);
+    response = this.gvui.filterApiResponse(session, workloadId, upstreamPath, response, publicOrigin);
     response = filterDiscoveryNodeResponse(session, workloadId, upstreamPath, response);
 
     this.sessionBroker.saveCookieJar(

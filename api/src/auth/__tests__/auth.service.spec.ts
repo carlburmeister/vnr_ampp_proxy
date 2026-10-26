@@ -23,14 +23,12 @@ describe('AuthService', () => {
   let getWorkloadDenials: jest.Mock;
   let findById: jest.Mock;
   let storedPasswordHash: string;
-  let phase2Enabled: boolean;
   let gvuiLayouts: AllowedGvuiLayout[];
   let getUserLayouts: jest.Mock;
 
   beforeEach(() => {
-    phase2Enabled = false;
     gvuiLayouts = [];
-    getUserLayouts = jest.fn(async () => phase2Enabled ? gvuiLayouts : []);
+    getUserLayouts = jest.fn(() => Promise.resolve(gvuiLayouts));
     storedPasswordHash = 'password-hash';
     getUserDBWorkloads = jest.fn(async () => [
       {
@@ -162,7 +160,7 @@ describe('AuthService', () => {
       getWorkloadName,
     } as unknown as AmppControlService;
 
-    const gvui = { get enabled() { return phase2Enabled; }, getUserLayouts } as unknown as GvuiPermissionsService;
+    const gvui = { getUserLayouts } as unknown as GvuiPermissionsService;
     service = new AuthService(userCredentials, amppControl, new ConfigService(), gvui);
   });
 
@@ -391,7 +389,6 @@ describe('AuthService', () => {
   it('filters GVUI workload associations without expanding embedded resource access', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
     const previous = await service.login('admin', 'password');
-    phase2Enabled = true;
     gvuiLayouts = [
       { id: 'top-level', name: 'Top', associatedWorkloadId: null },
       { id: 'associated', name: 'Associated', associatedWorkloadId: 'DIRECT-WORKLOAD-001' },
@@ -407,7 +404,6 @@ describe('AuthService', () => {
 
   it('allows a top-level GVUI grant without manufacturing a workload or launch context', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
-    phase2Enabled = true;
     gvuiLayouts = [{ id: 'top', name: 'Top', associatedWorkloadId: null }];
     getUserDBWorkloads.mockResolvedValue([]); getUserDashboards.mockResolvedValue([]);
     const result = await service.login('admin', 'password');
@@ -420,7 +416,6 @@ describe('AuthService', () => {
     const clock = jest.spyOn(Date, 'now').mockReturnValue(100000);
     try {
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
-      phase2Enabled = true;
       gvuiLayouts = [{ id: 'layout', name: 'Layout', associatedWorkloadId: null }];
       const session: any = {};
       service.applyAuthorization(session, await service.login('admin', 'password'));
@@ -441,7 +436,6 @@ describe('AuthService', () => {
 
   it('includes GVUI names and associations in authorization fingerprints', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
-    phase2Enabled = true;
     gvuiLayouts = [{ id: 'layout', name: 'Original', associatedWorkloadId: null }];
     const session: any = {};
     service.applyAuthorization(session, await service.login('admin', 'password'));
@@ -455,7 +449,6 @@ describe('AuthService', () => {
 
   it('refreshes old sessions missing GVUI fields immediately even with a matching fingerprint', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
-    phase2Enabled = true;
     gvuiLayouts = [{ id: 'layout', name: 'Layout', associatedWorkloadId: null }];
     const session: any = {};
     service.applyAuthorization(session, await service.login('admin', 'password'));
@@ -465,21 +458,20 @@ describe('AuthService', () => {
     expect(session.allowedGvuiLayouts).toEqual(gvuiLayouts);
   });
 
-  it('clears Phase 2 grants immediately when its flag is disabled', async () => {
+  it('rebuilds pre-production authorization snapshots before the normal refresh interval', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
-    phase2Enabled = true;
     gvuiLayouts = [{ id: 'layout', name: 'Layout', associatedWorkloadId: null }];
     const session: any = {};
     service.applyAuthorization(session, await service.login('admin', 'password'));
-    phase2Enabled = false;
+    session.authorizationFingerprint = 'old-fingerprint';
+    session.allowedGvuiLayouts = []; session.allowedGvuiLayoutIds = [];
     expect(await service.refreshSessionAuthorization(session)).toBe(true);
-    expect(session.allowedGvuiLayoutIds).toEqual([]);
-    expect(session.gvuiPhase2Enabled).toBe(false);
+    expect(session.authorizationFingerprint).toMatch(/^gvui-v2:/);
+    expect(session.allowedGvuiLayoutIds).toEqual(['layout']);
   });
 
   it('does not advance the refresh deadline or authorize a request after a GVUI database failure', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
-    phase2Enabled = true;
     const session: any = {};
     service.applyAuthorization(session, await service.login('admin', 'password'));
     session.authorizationCheckedAt = 0;

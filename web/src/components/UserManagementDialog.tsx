@@ -12,7 +12,7 @@ import {
   type ClientUser,
   type DiscoveredChild,
 } from '../services/clientPermissionsApi';
-import { comparablePermissions, permissionSavePayload } from '../features/gvui/gvuiPermissions';
+import { comparablePermissions } from '../features/gvui/gvuiPermissions';
 
 type Props = { onClose: () => void; onPermissionsSaved: () => void };
 
@@ -161,7 +161,7 @@ export function UserManagementDialog({ onClose, onPermissionsSaved }: Props) {
         'Changing parent assignments will remove these denials. Continue?',
       )) return;
       const changes: ClientPermissions = { ...draft, deniedChildWorkloadIds: retainedDenials };
-      const saved = await saveClientPermissions(userId, permissionSavePayload(changes, resources.gvuiPhase2Enabled === true));
+      const saved = await saveClientPermissions(userId, changes);
       setDraft(saved);
       setOriginal(saved);
       setNotice('Permissions saved. Active sessions will refresh automatically.');
@@ -263,9 +263,9 @@ export function UserManagementDialog({ onClose, onPermissionsSaved }: Props) {
                     </label>;
                   }) : <p>No dashboards configured for this client.</p>}
                 </section>
-                {resources.gvuiPhase2Enabled && <section aria-labelledby="user-management-gvui">
+                <section aria-labelledby="user-management-gvui">
                   <h3 id="user-management-gvui">GVUI Layouts</h3>
-                  <p className="user-management-hint">Layout grants are separate. Embedded applications still require their own workload permissions.</p>
+                  <p className="user-management-hint">Layout grants are separate. Embedded applications and dashboards require their own permissions.</p>
                   {resources.gvuiLayouts?.length ? resources.gvuiLayouts.map((layout) => {
                     const accessible = !layout.associatedWorkloadId || rootIds.has(normalized(layout.associatedWorkloadId));
                     return <label key={layout.id} className="user-management-dashboard">
@@ -275,7 +275,7 @@ export function UserManagementDialog({ onClose, onPermissionsSaved }: Props) {
                       {!accessible && <small>Requires associated workload access</small>}
                     </label>;
                   }) : <p>No GVUI layouts available for this client.</p>}
-                </section>}
+                </section>
               </div>
             ) : !error ? <p>Select a client user to manage permissions.</p> : null}
           </>

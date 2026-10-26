@@ -15,8 +15,7 @@ import { AmppProxyController } from '../src/ampp-proxy/ampp-proxy.controller';
 import { AmppProxyService } from '../src/ampp-proxy/ampp-proxy.service';
 import { AmppProxySessionService } from '../src/ampp-proxy/ampp-proxy-session.service';
 import { AmppResponseRewriterService } from '../src/ampp-proxy/ampp-response-rewriter.service';
-import { GvuiPhase1Service } from '../src/ampp-proxy/gvui/gvui-phase1.service';
-import { GvuiPhase2Service } from '../src/ampp-proxy/gvui/gvui-phase2.service';
+import { GvuiProxyService } from '../src/ampp-proxy/gvui/gvui-proxy.service';
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
@@ -35,7 +34,6 @@ describe('GVUI launch/access contracts (isolated HTTP)', () => {
   beforeEach(async () => {
     config = new ConfigService({
       PLATFORM_URL: origin,
-      GVUI_PHASE2_ENABLED: 'true',
     });
     session = {
       cookie: {} as SessionData['cookie'],
@@ -46,7 +44,6 @@ describe('GVUI launch/access contracts (isolated HTTP)', () => {
         clientId: 1,
         userType: 'user',
       },
-      gvuiPhase2Enabled: true,
       allowedGvuiLayoutIds: [A, B],
       allowedGvuiLayouts: [A, B].map((id) => ({
         id,
@@ -84,8 +81,7 @@ describe('GVUI launch/access contracts (isolated HTTP)', () => {
     const module = await Test.createTestingModule({
       controllers: [AmppProxyController],
       providers: [
-        GvuiPhase2Service,
-        GvuiPhase1Service,
+        GvuiProxyService,
         AmppProxyPolicyService,
         AmppMatrixFilterService,
         AmppResponseRewriterService,
@@ -195,15 +191,15 @@ describe('GVUI launch/access contracts (isolated HTTP)', () => {
     expect(catalog).not.toHaveBeenCalled();
   });
 
-  it('keeps grants after an AMPP outage and rejects launches while disabled', async () => {
+  it('keeps grants after an AMPP outage', async () => {
     catalog.mockRejectedValue(new Error('offline'));
     await request(app.getHttpServer())
       .get(`/api/ampp-proxy/gvui/${A}/launch`)
       .expect(502);
     expect(session.allowedGvuiLayoutIds).toEqual([A, B]);
-    config.set('GVUI_PHASE2_ENABLED', 'false');
-    await request(app.getHttpServer())
-      .get(`/api/ampp-proxy/gvui/${A}/launch`)
-      .expect(403);
+  });
+
+  it('has no legacy POC launch endpoint', async () => {
+    await request(app.getHttpServer()).get('/api/ampp-proxy/gvui-phase1').expect(404);
   });
 });

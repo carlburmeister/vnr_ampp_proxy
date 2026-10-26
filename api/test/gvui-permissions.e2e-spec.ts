@@ -127,23 +127,8 @@ describe('GVUI permission API contracts (isolated HTTP)', () => {
     },
   );
 
-  it('keeps legacy APIs working without GVUI queries when the flag is disabled', async () => {
-    fixture.config.set('GVUI_PHASE2_ENABLED', 'false');
-    await request(app.getHttpServer())
-      .get('/api/user-management/resources')
-      .expect(200);
-    await request(app.getHttpServer()).get(permissionUrl).expect(200);
-    await request(app.getHttpServer())
-      .put(permissionUrl)
-      .send(fixture.changes)
-      .expect(200);
-    expect(fixture.run.mock.calls.some(([sql]) => sql.includes('gvui'))).toBe(
-      false,
-    );
-    expect(fixture.state.grants).toEqual([16]);
-    await request(app.getHttpServer())
-      .put(permissionUrl)
-      .send({ ...fixture.changes, gvuiLayoutIds: [] })
-      .expect(400);
+  it('does not expose an activation flag in resource responses', async () => {
+    const response = await request(app.getHttpServer()).get('/api/user-management/resources').expect(200);
+    expect(Object.keys(response.body as object).sort()).toEqual(['dashboards', 'gvuiLayouts', 'workloads']);
   });
 });

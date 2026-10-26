@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { AmppControlClientModule } from '../ampp/ampp-control-client.module';
-import { GvuiPhase2Service } from './gvui/gvui-phase2.service';
+import { GvuiProxyService } from './gvui/gvui-proxy.service';
 import { AmppApiProxyController } from './ampp-api-proxy.controller';
 import { AmppBearerTokenService } from './ampp-bearer-token.service';
 import { AmppBrowserSecurityService } from './ampp-browser-security.service';
@@ -16,7 +16,6 @@ import { AmppProxyService } from './ampp-proxy.service';
 import { AmppProxySessionService } from './ampp-proxy-session.service';
 import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
-import { GvuiPhase1Service } from './gvui/gvui-phase1.service';
 import { AmppWebSocketProxyService } from './ampp-websocket-proxy.service';
 
 @Module({
@@ -34,8 +33,7 @@ import { AmppWebSocketProxyService } from './ampp-websocket-proxy.service';
     AmppProxySessionService,
     AmppSessionBrokerService,
     AmppUtilityLoginService,
-    GvuiPhase1Service,
-    GvuiPhase2Service,
+    GvuiProxyService,
     AmppWebSocketProxyService,
   ],
   exports: [AmppWebSocketProxyService],

@@ -1,5 +1,4 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise';
 
 import { UserCredentialsRepository } from '../../users/services/user-credentials.repository';
@@ -16,14 +15,7 @@ const UNRESTRICTED = `NOT EXISTS (
 
 @Injectable()
 export class GvuiPermissionsService {
-  constructor(
-    private readonly users: UserCredentialsRepository,
-    private readonly config: ConfigService,
-  ) {}
-
-  get enabled(): boolean {
-    return this.config.get<string>('GVUI_PHASE2_ENABLED') === 'true';
-  }
+  constructor(private readonly users: UserCredentialsRepository) {}
 
   validateChanges(value: unknown): number[] | undefined {
     if (value === undefined) return undefined;
@@ -33,8 +25,6 @@ export class GvuiPermissionsService {
       value.some((id) => !Number.isInteger(id) || id < 1 || id > 2147483647)
     )
       throw new BadRequestException('Invalid GV.UI layout assignment IDs');
-    if (!this.enabled)
-      throw new BadRequestException('GV.UI Phase 2 is disabled');
     return [...new Set(value)] as number[];
   }
 
@@ -42,7 +32,6 @@ export class GvuiPermissionsService {
     db: PoolConnection,
     clientId: number,
   ): Promise<GvuiLayoutAssignment[]> {
-    if (!this.enabled) return [];
     const [rows] = await db.execute<(RowDataPacket & GvuiLayoutAssignment)[]>(
       `SELECT g.row_id AS id, g.layout_id AS layoutId, g.name,
               g.associated_workload_id AS associatedWorkloadId
@@ -58,7 +47,6 @@ export class GvuiPermissionsService {
     userId: number,
     clientId: number,
   ): Promise<number[]> {
-    if (!this.enabled) return [];
     const [rows] = await db.execute<(RowDataPacket & { id: number })[]>(
       `SELECT g.row_id AS id FROM client_user_gvui_permissions p
        JOIN client_users u ON u.row_id=p.user_id AND u.client_id=?
@@ -73,7 +61,6 @@ export class GvuiPermissionsService {
     userId: string,
     clientId: number,
   ): Promise<AllowedGvuiLayout[]> {
-    if (!this.enabled) return [];
     return this.users.withConnection(async (db) => {
       const [rows] = await db.execute<(RowDataPacket & AllowedGvuiLayout)[]>(
         `SELECT LOWER(g.layout_id) AS id, g.name,
@@ -96,11 +83,6 @@ export class GvuiPermissionsService {
     actorId: string,
     ids: number[] | undefined,
   ): Promise<number[]> {
-    if (!this.enabled) {
-      if (ids !== undefined)
-        throw new BadRequestException('GV.UI Phase 2 is disabled');
-      return [];
-    }
     if (ids === undefined) return this.getGrantedIds(db, userId, clientId);
     if (ids.length) {
       const [rows] = await db.query<(RowDataPacket & { row_id: number })[]>(

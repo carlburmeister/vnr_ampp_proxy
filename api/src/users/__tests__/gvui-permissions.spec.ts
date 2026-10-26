@@ -127,12 +127,4 @@ describe('GVUI grants in the shared permission transaction', () => {
     expect(db.commit).not.toHaveBeenCalled();
   });
 
-  it('does not query GVUI tables for legacy saves while disabled', async () => {
-    const { actor, service, changes, run } = setup(false);
-    await service.replacePermissions(actor, 2, changes);
-    expect(run.mock.calls.some(([sql]) => sql.includes('gvui'))).toBe(false);
-    await expect(
-      service.replacePermissions(actor, 2, { ...changes, gvuiLayoutIds: [] }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-  });
 });
