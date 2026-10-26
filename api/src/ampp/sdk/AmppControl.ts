@@ -158,6 +158,10 @@ export class AmppControl extends events.EventEmitter {
     return names;
   }
 
+  async listGvuiConfigurations(): Promise<unknown> {
+    return (await this.gvPlatform.get('/configuration/api/v1/configurations/startsWith/gv-ui-l')).data as unknown;
+  }
+
   /**
    * getApplicationConfig
    * uses AMPP Mocha API to get application configuration data

@@ -149,6 +149,21 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
     expect(rows.get(sid).expires_at).toBeGreaterThan(original);
     expect(response.headers['cache-control']).toBe('no-store');
     expect(response.headers['set-cookie'][0]).toContain('test.sid=');
+    expect(response.body.allowedGvuiLayoutIds).toEqual([]);
+    expect(response.body.allowedGvuiLayouts).toEqual([]);
+  });
+
+  it('includes effective GVUI access in session responses', async () => {
+    const cookie = await login();
+    const row = [...rows.values()][0];
+    const data = JSON.parse(row.data);
+    data.allowedGvuiLayoutIds = ['layout-uuid'];
+    data.allowedGvuiLayouts = [{ id: 'layout-uuid', name: 'Layout', associatedWorkloadId: null }];
+    row.data = JSON.stringify(data);
+    const response = await request(app.getHttpServer()).get('/api/ampp/session/current')
+      .set('Cookie', cookie).expect(200);
+    expect(response.body.allowedGvuiLayoutIds).toEqual(data.allowedGvuiLayoutIds);
+    expect(response.body.allowedGvuiLayouts).toEqual(data.allowedGvuiLayouts);
   });
 
   it('rejects an expired cookie, deletes its row and clears the configured cookie', async () => {

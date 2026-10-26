@@ -167,6 +167,11 @@ export class AmppControlService implements OnModuleDestroy
     return this.dashboardNamesPending;
   }
 
+  async getGvuiConfigurations(): Promise<unknown> {
+    const client = await this.getClient();
+    return client.listGvuiConfigurations();
+  }
+
   async getWorkloadName(id: string): Promise<string | undefined> {
     const key = id.toLowerCase();
     const cached = this.workloadNames.get(key);

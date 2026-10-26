@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Controller,
   Get,
   Param,
@@ -16,6 +17,7 @@ import { AmppResponseRewriterService } from './ampp-response-rewriter.service';
 import { AmppProxyService } from './ampp-proxy.service';
 import { AmppProxySessionService } from './ampp-proxy-session.service';
 import { GvuiPhase1Service } from './gvui/gvui-phase1.service';
+import { GvuiPhase2Service } from './gvui/gvui-phase2.service';
 
 @Controller('ampp-proxy')
 @UseGuards(SessionAuthGuard)
@@ -26,11 +28,25 @@ export class AmppProxyController {
     private readonly proxy: AmppProxyService,
     private readonly proxySession: AmppProxySessionService,
     private readonly gvui: GvuiPhase1Service,
+    private readonly phase2: GvuiPhase2Service,
   ) {}
 
   @Get('gvui-phase1')
   getGvuiPhase1(@Req() req: Request) {
     return { layout: this.gvui.getLayout(req.session) };
+  }
+
+  @Get('gvui/:layoutId/launch')
+  launchGvui(@Param('layoutId') id: string, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!this.phase2.enabled) throw new ForbiddenException('GV.UI Phase 2 is disabled');
+    return this.phase2.launch(req.session, id);
+  }
+
+  @Get('gvui/:layoutId/access')
+  checkGvuiAccess(@Param('layoutId') id: string, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    res.setHeader('Cache-Control', 'no-store');
+    return { allowed: this.phase2.enabled && this.phase2.isAllowed(req.session, `gvui-${id.toLowerCase()}`) };
   }
 
   @Get('ui/:workloadId')

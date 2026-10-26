@@ -40,6 +40,9 @@ export class AmppSessionController {
       nodeId: req.session.nodeId,
       allowedWorkloads: req.session.allowedWorkloads ?? [],
       allowedDashboards: req.session.allowedDashboards ?? [],
+      allowedGvuiLayoutIds: req.session.allowedGvuiLayoutIds ?? [],
+      allowedGvuiLayouts: req.session.allowedGvuiLayouts ?? [],
+      gvuiPhase2Enabled: req.session.gvuiPhase2Enabled === true,
     };
   }
 }

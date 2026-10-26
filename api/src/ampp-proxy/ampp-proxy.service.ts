@@ -24,6 +24,7 @@ import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
 import { GvuiPhase1Service } from './gvui/gvui-phase1.service';
+import { GvuiPhase2Service } from './gvui/gvui-phase2.service';
 import { filterDiscoveryNodeResponse } from './ampp-discovery-filter';
 
 @Injectable()
@@ -41,6 +42,7 @@ export class AmppProxyService {
     private readonly sessionBroker: AmppSessionBrokerService,
     private readonly utilityLogin: AmppUtilityLoginService,
     private readonly gvui: GvuiPhase1Service,
+    private readonly phase2?: GvuiPhase2Service,
   ) {
     this.platformUrl = new URL(
       this.config.getOrThrow<string>('PLATFORM_URL'),
@@ -141,14 +143,17 @@ export class AmppProxyService {
       session,
       upstreamPath,
     );
+    const prepared = this.phase2?.enabled
+      ? this.phase2.prepareApiRequest(session, workloadId, method, upstreamPath, body)
+      : { path: upstreamPath, body };
     const sessionToken = this.bearerToken.getSessionToken(session);
     let token = sessionToken ?? (await this.bearerToken.getToken());
     let response = await this.requestApiResource(
       cookieJar,
       method,
-      upstreamPath,
+      prepared.path,
       browserHeaders,
-      body,
+      prepared.body,
       workloadId,
       publicOrigin,
       token,
@@ -162,15 +167,16 @@ export class AmppProxyService {
       response = await this.requestApiResource(
         cookieJar,
         method,
-        upstreamPath,
+        prepared.path,
         browserHeaders,
-        body,
+        prepared.body,
         workloadId,
         publicOrigin,
         token,
       );
     }
 
+    if (this.phase2?.enabled) response = this.phase2.completeApiRequest(session, workloadId, prepared, response);
     this.captureAmppUserId(session, upstreamPath, response);
     this.captureNotificationMailbox(session, method, upstreamPath, response);
 
@@ -464,6 +470,9 @@ export class AmppProxyService {
     );
 
     headers.Authorization = `Bearer ${token}`;
+    if (this.gvui.isCatalogRequest(new URL(upstreamPath, this.platformUrl))) {
+      delete headers['If-None-Match']; delete headers['If-Modified-Since'];
+    }
 
     for (const [browserName, upstreamName] of [
       ['content-type', 'Content-Type'],

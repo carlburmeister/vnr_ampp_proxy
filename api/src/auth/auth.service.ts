@@ -15,6 +15,8 @@ import type {
   WorkloadPageType,
 } from '../ampp/types/workload_types';
 import { UserCredentialsRepository, type UserCredentialRecord } from '../users/services/user-credentials.repository';
+import { GvuiPermissionsService } from '../ampp-proxy/gvui/gvui-permissions.service';
+import type { AllowedGvuiLayout } from '../ampp-proxy/gvui/gvui.types';
 
 export type AuthenticatedUser = {
   id: string;
@@ -32,6 +34,9 @@ export type LoginResult = {
   allowedWorkloads: AllowedWorkload[];
   allowedDashboardIds: string[];
   allowedDashboards: AllowedDashboard[];
+  allowedGvuiLayoutIds: string[];
+  allowedGvuiLayouts: AllowedGvuiLayout[];
+  gvuiPhase2Enabled: boolean;
   amppAllowedWorkloadIds: string[];
   amppResourceWorkloadIds: string[];
   authorizationFingerprint: string;
@@ -55,6 +60,7 @@ export class AuthService {
     private readonly userCredentials: UserCredentialsRepository,
     private readonly amppControl: AmppControlService,
     private readonly config?: ConfigService,
+    private readonly gvui?: GvuiPermissionsService,
   ) {}
 
   /*-------------------------------------------------------------*/
@@ -83,8 +89,10 @@ export class AuthService {
     const interval = Math.max(0, Number(
       this.config?.get<string>('AUTH_PERMISSION_REFRESH_INTERVAL_MS') ?? 10000,
     ) || 0);
+    const gvuiSessionCurrent = session.gvuiPhase2Enabled === (this.gvui?.enabled ?? false) &&
+      Array.isArray(session.allowedGvuiLayouts) && Array.isArray(session.allowedGvuiLayoutIds);
     if (session.authorizationCheckedAt &&
-        Date.now() - session.authorizationCheckedAt < interval) {
+        Date.now() - session.authorizationCheckedAt < interval && gvuiSessionCurrent) {
       return false;
     }
 
@@ -93,14 +101,15 @@ export class AuthService {
       throw new UnauthorizedException('Account no longer exists');
     }
 
-    const [workloads, dashboards, denials] = await Promise.all([
+    const [workloads, dashboards, denials, gvuiLayouts] = await Promise.all([
       this.getUserDBWorkloads(user.id),
       this.userCredentials.getUserDashboards(user.id),
       this.userCredentials.getWorkloadDenials(user.id),
+      this.gvui?.getUserLayouts(user.id, user.clientId) ?? [],
     ]);
-    const fingerprint = this.getFingerprint(user, workloads, dashboards, denials);
+    const fingerprint = this.getFingerprint(user, workloads, dashboards, denials, gvuiLayouts);
     session.authorizationCheckedAt = Date.now();
-    if (session.authorizationFingerprint === fingerprint && session.amppResourceWorkloadIds) {
+    if (session.authorizationFingerprint === fingerprint && session.amppResourceWorkloadIds && gvuiSessionCurrent) {
       // Refresh display labels without rebuilding authorization or changing access.
       const resolved = await this.withAmppDashboardNames(dashboards);
       const dashboardNames = new Map(resolved.map((item) => [item.id.toLowerCase(), item.name]));
@@ -123,12 +132,13 @@ export class AuthService {
       return true; // Persist the recheck time to avoid re-querying on every request.
     }
 
-    const result = await this.buildAuthorization(user, workloads, dashboards, denials);
+    const result = await this.buildAuthorization(user, workloads, dashboards, denials, gvuiLayouts);
     const clientChanged = session.user.clientId !== result.user.clientId;
     this.applyAuthorization(session, result);
     session.amppMatrixAccess = undefined;
     session.amppDashboardMatrixAccess = undefined;
     session.amppNotificationMailboxIds = undefined;
+    session.gvuiMailboxes = undefined;
     if (clientChanged) {
       session.amppUserId = undefined;
       session.amppAccessToken = undefined;
@@ -147,6 +157,9 @@ export class AuthService {
     session.allowedWorkloads = result.allowedWorkloads;
     session.allowedDashboardIds = result.allowedDashboardIds;
     session.allowedDashboards = result.allowedDashboards;
+    session.allowedGvuiLayoutIds = result.allowedGvuiLayoutIds;
+    session.allowedGvuiLayouts = result.allowedGvuiLayouts;
+    session.gvuiPhase2Enabled = result.gvuiPhase2Enabled;
     session.amppAllowedWorkloadIds = result.amppAllowedWorkloadIds;
     session.amppResourceWorkloadIds = result.amppResourceWorkloadIds;
     session.authorizationFingerprint = result.authorizationFingerprint;
@@ -171,12 +184,14 @@ export class AuthService {
     suppliedWorkloads?: UserDBWorkload[],
     suppliedDashboards?: AllowedDashboard[],
     suppliedDenials?: string[],
+    suppliedGvuiLayouts?: AllowedGvuiLayout[],
   ): Promise<LoginResult> {
     /* Get user's assigned workloads from the DB */
-    const [userDBWorkloads, assignedDashboards, deniedIds] = await Promise.all([
+    const [userDBWorkloads, assignedDashboards, deniedIds, assignedGvuiLayouts] = await Promise.all([
       suppliedWorkloads ?? this.getUserDBWorkloads(user.id),
       suppliedDashboards ?? this.userCredentials.getUserDashboards(user.id),
       suppliedDenials ?? this.userCredentials.getWorkloadDenials(user.id),
+      suppliedGvuiLayouts ?? this.gvui?.getUserLayouts(user.id, user.clientId) ?? [],
     ]);
     const denied = new Set(deniedIds.map((id) => id.toLowerCase()));
     const activeDBWorkloads = userDBWorkloads.filter(
@@ -271,6 +286,10 @@ export class AuthService {
       (dashboard) => dashboard.associatedWorkloadId === null ||
         effectiveIds.has(dashboard.associatedWorkloadId.toLowerCase()),
     ));
+    // Match dashboard association visibility without granting any workload access.
+    const allowedGvuiLayouts = assignedGvuiLayouts.filter((layout) =>
+      layout.associatedWorkloadId === null || effectiveIds.has(layout.associatedWorkloadId.toLowerCase()),
+    );
 
     return {
       user: {
@@ -286,9 +305,12 @@ export class AuthService {
       allowedWorkloads,
       allowedDashboardIds: allowedDashboards.map((dashboard) => dashboard.id),
       allowedDashboards,
+      allowedGvuiLayoutIds: allowedGvuiLayouts.map((layout) => layout.id),
+      allowedGvuiLayouts,
+      gvuiPhase2Enabled: this.gvui?.enabled ?? false,
       amppAllowedWorkloadIds,
       amppResourceWorkloadIds,
-      authorizationFingerprint: this.getFingerprint(user, userDBWorkloads, assignedDashboards, deniedIds),
+      authorizationFingerprint: this.getFingerprint(user, userDBWorkloads, assignedDashboards, deniedIds, assignedGvuiLayouts),
     };
   }
   /*-------------------------------------------------------------*/
@@ -299,6 +321,7 @@ export class AuthService {
     workloads: UserDBWorkload[],
     dashboards: AllowedDashboard[],
     denials: string[],
+    gvuiLayouts: AllowedGvuiLayout[],
   ): string {
     const sorted = <T>(items: T[], selector: (item: T) => string) =>
       items.map(selector).sort();
@@ -310,6 +333,8 @@ export class AuthService {
       workloads: sorted(workloads, (w) => `${w.id.toLowerCase()}:${w.is_parent}:${w.pageType}:${w.name}`),
       dashboards: sorted(dashboards, (d) => `${d.id.toLowerCase()}:${d.associatedWorkloadId?.toLowerCase() ?? ''}:${d.name}:${d.pageType}`),
       denials: denials.map((id) => id.toLowerCase()).sort(),
+      gvuiPhase2Enabled: this.gvui?.enabled ?? false,
+      gvuiLayouts: sorted(gvuiLayouts, (g) => `${g.id.toLowerCase()}:${g.associatedWorkloadId?.toLowerCase() ?? ''}:${g.name}`),
     })).digest('hex');
   }
   /*-------------------------------------------------------------*/

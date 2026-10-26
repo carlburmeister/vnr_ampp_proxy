@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { SessionData } from 'express-session';
 
 import type { AmppCookieHttpResponse } from '../ampp-cookie-http.service';
+import { GvuiPhase2Service } from './gvui-phase2.service';
 
 // Development-only GV.UI proof of concept. Disabled unless explicitly configured.
 const LAYOUT_ID = 'f8106b06-9ff0-424d-b6dc-5df246f3ee2f';
@@ -20,11 +21,12 @@ export class GvuiPhase1Service {
   private readonly platformOrigin: string;
   private readonly logger = new Logger(GvuiPhase1Service.name);
 
-  constructor(private readonly config: ConfigService) {
+  constructor(private readonly config: ConfigService, private readonly phase2?: GvuiPhase2Service) {
     this.platformOrigin = new URL(config.getOrThrow<string>('PLATFORM_URL')).origin;
   }
 
   getLayout(session: SessionData): { id: string; name: string; workloadId: string } | null {
+    if (this.config.get<string>('GVUI_PHASE2_ENABLED') === 'true') return null;
     const userId = this.config.get<string>('GVUI_PHASE1_USER_ID');
     if (
       this.config.get<string>('GVUI_PHASE1_ENABLED') !== 'true' ||
@@ -50,10 +52,15 @@ export class GvuiPhase1Service {
   }
 
   isAllowed(session: SessionData, workloadId: string): boolean {
+    if (this.config.get<string>('GVUI_PHASE2_ENABLED') === 'true') return this.phase2?.isAllowed(session, workloadId) ?? false;
     return this.getLayout(session)?.workloadId.toLowerCase() === workloadId.toLowerCase();
   }
 
   assertUiPath(session: SessionData, workloadId: string, target: URL): void {
+    if (this.config.get<string>('GVUI_PHASE2_ENABLED') === 'true') {
+      if (!this.phase2) throw new ForbiddenException('GV.UI Phase 2 is unavailable');
+      return this.phase2.assertUiPath(session, workloadId, target);
+    }
     if (!this.isAllowed(session, workloadId)) {
       throw new ForbiddenException('GV.UI development layout is not permitted');
     }
@@ -88,6 +95,7 @@ export class GvuiPhase1Service {
   }
 
   isMailboxIdAllowed(session: SessionData, workloadId: string, id: string): boolean {
+    if (this.config.get<string>('GVUI_PHASE2_ENABLED') === 'true') return this.phase2?.canCreateMailbox(session, workloadId, id) ?? false;
     if (!this.isAllowed(session, workloadId)) return false;
     const prefix = `ts-api.ampp-proxy.ui.${workloadId.toLowerCase()}.`;
     const normalized = id.toLowerCase();
@@ -102,6 +110,7 @@ export class GvuiPhase1Service {
     mailboxId: string,
     topic: string,
   ): boolean {
+    if (this.config.get<string>('GVUI_PHASE2_ENABLED') === 'true') return this.phase2?.isNotificationTopicAllowed(session, workloadId, mailboxId, topic) ?? false;
     return this.isMailboxIdAllowed(session, workloadId, mailboxId) &&
       topic.toLowerCase() === 'gv.ui.notifications.#';
   }
@@ -112,6 +121,10 @@ export class GvuiPhase1Service {
     upstreamPath: string,
     response: AmppCookieHttpResponse,
   ): AmppCookieHttpResponse {
+    if (this.config.get<string>('GVUI_PHASE2_ENABLED') === 'true') {
+      if (!this.phase2) throw new ForbiddenException('GV.UI Phase 2 is unavailable');
+      return this.phase2.filterApiResponse(session, workloadId, upstreamPath, response);
+    }
     const target = new URL(upstreamPath, 'http://ampp-proxy.local');
     if (!this.isCatalogRequest(target) || response.status < 200 || response.status >= 300) {
       return response;

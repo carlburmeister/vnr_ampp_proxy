@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { UserManagementDialog } from './UserManagementDialog';
 import { GvuiPhase1Button } from '../features/gvui/GvuiPhase1Button';
+import { GvuiLayoutButton } from '../features/gvui/GvuiLayoutButton';
 
 import './UserHomePage.css';
 
@@ -37,6 +38,8 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
 {  
   const workloads: AllowedWorkload[] = session.allowedWorkloads ?? [];
   const dashboards: AllowedDashboard[] = session.allowedDashboards ?? [];
+  const gvuiLayouts = session.gvuiPhase2Enabled ? [...(session.allowedGvuiLayouts ?? [])]
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })) : [];
   const [actionsOpen, setActionsOpen] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
   const [expandedWorkloadIds, setExpandedWorkloadIds] = useState<string[]>([]);
@@ -56,6 +59,7 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
       ),
     ]),
     ...dashboards.map((dashboard) => dashboard.name),
+    ...gvuiLayouts.map((layout) => layout.name),
   ];
 
   const longestNameLength = Math.max(
@@ -67,6 +71,12 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
   const hasStandaloneDashboards = dashboards.some(
     (dashboard) => dashboard.associatedWorkloadId === null,
   );
+  const hasStandaloneGvui = gvuiLayouts.some((layout) => layout.associatedWorkloadId === null);
+  const hasGvui = (id: string) => gvuiLayouts.some((layout) => layout.associatedWorkloadId?.toLowerCase() === id.toLowerCase());
+  function renderGvuiButtons(id: string | null) {
+    return gvuiLayouts.filter((layout) => layout.associatedWorkloadId?.toLowerCase() === id?.toLowerCase())
+      .map((layout) => <GvuiLayoutButton key={layout.id} layout={layout} width={buttonWidth} />);
+  }
 
   /*-------------------------------------------------------------*/
   //  handleWorkloadClick()
@@ -290,13 +300,13 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
           </p>
         )}
 
-        {workloads.length || hasStandaloneDashboards ? (
+        {workloads.length || hasStandaloneDashboards || hasStandaloneGvui ? (
           <div className="workload-button-list">
             {workloads.map((workload: AllowedWorkload) => {
               const isExpanded = expandedWorkloadIds.includes(workload.id);
               const hasDashboards = dashboards.some(
                 (dashboard) => dashboard.associatedWorkloadId === workload.id,
-              );
+              ) || hasGvui(workload.id);
               const childWorkloads = [
                 ...(workload.child_workloads ?? []),
               ].sort((firstWorkload, secondWorkload) =>
@@ -331,7 +341,7 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
                       <button
                         type="button"
                         className="workload-expand-button"
-                        aria-label={`Toggle dashboards for ${workload.name}`}
+                        aria-label={`Toggle assigned resources for ${workload.name}`}
                         aria-expanded={isExpanded}
                         onClick={() => toggleWorkloadExpanded(workload.id)}
                       >
@@ -343,6 +353,7 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
                   {isExpanded && (workload.is_parent === 1 || hasDashboards) && (
                     <div className="child-workload-button-list">
                       {renderDashboardButtons(workload.id)}
+                      {renderGvuiButtons(workload.id)}
                       {workload.is_parent === 1 && (
                         childWorkloads.length ? (
                           childWorkloads.map((childWorkload: ChildWorkload) => {
@@ -352,7 +363,7 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
                             const hasChildDashboards = dashboards.some(
                               (dashboard) =>
                                 dashboard.associatedWorkloadId === childWorkload.id,
-                            );
+                            ) || hasGvui(childWorkload.id);
 
                             return (
                               <div
@@ -379,7 +390,7 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
                                       type="button"
                                       className="workload-expand-button"
                                       aria-label={
-                                        `Toggle dashboards for ${childWorkload.name}`
+                                        `Toggle assigned resources for ${childWorkload.name}`
                                       }
                                       aria-expanded={isChildExpanded}
                                       onClick={() =>
@@ -393,6 +404,7 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
                                 {hasChildDashboards && isChildExpanded && (
                                   <div className="child-workload-button-list">
                                     {renderDashboardButtons(childWorkload.id)}
+                                    {renderGvuiButtons(childWorkload.id)}
                                   </div>
                                 )}
                               </div>
@@ -410,7 +422,8 @@ export function UserHomePage({ session, onLogout, onPermissionsSaved }: UserHome
               );
             })}
             {renderDashboardButtons(null)}
-            <GvuiPhase1Button />
+            {renderGvuiButtons(null)}
+            {!session.gvuiPhase2Enabled && <GvuiPhase1Button />}
           </div>
         ) : (
           <p>No workloads assigned.</p>

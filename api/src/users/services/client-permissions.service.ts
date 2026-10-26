@@ -5,11 +5,13 @@ import { AmppControlService } from '../../ampp/services/ampp-control.service';
 import type { AmppChildWorkloadsResponse } from '../../ampp/types/workload_types';
 import type { AuthenticatedUser } from '../../auth/auth.service';
 import { UserCredentialsRepository } from './user-credentials.repository';
+import { GvuiPermissionsService } from '../../ampp-proxy/gvui/gvui-permissions.service';
 
 export type PermissionChanges = {
   workloadIds: number[];
   dashboardIds: number[];
   deniedChildWorkloadIds: string[];
+  gvuiLayoutIds?: number[];
 };
 
 type IdRow = RowDataPacket & { row_id: number };
@@ -20,6 +22,7 @@ export class ClientPermissionsService {
   constructor(
     private readonly users: UserCredentialsRepository,
     private readonly ampp: AmppControlService,
+    private readonly gvui?: GvuiPermissionsService,
   ) {}
 
   private async assertAdmin(db: PoolConnection, actor: AuthenticatedUser) {
@@ -78,7 +81,8 @@ export class ClientPermissionsService {
           [actor.clientId],
         ),
       ]);
-      return { workloads, dashboards };
+      const gvuiLayouts = await this.gvui?.listAssignments(db, actor.clientId) ?? [];
+      return { workloads, dashboards, gvuiLayouts };
     });
     // Resolve names only after verifying client-admin access and client ownership.
     const [dashboardNames, workloadNames] = await Promise.all([
@@ -87,6 +91,8 @@ export class ClientPermissionsService {
         this.ampp.getWorkloadName(workload.workloadId as string))),
     ]);
     return {
+      gvuiPhase2Enabled: this.gvui?.enabled ?? false,
+      gvuiLayouts: resources.gvuiLayouts,
       workloads: resources.workloads.map((workload, i) => ({
         ...workload, name: workloadNames[i] || workload.name,
       })).sort((a, b) => (Number(b.isParent) - Number(a.isParent)) ||
@@ -131,6 +137,7 @@ export class ClientPermissionsService {
         ),
       ]);
       return {
+        gvuiLayoutIds: await this.gvui?.getGrantedIds(db, userId, actor.clientId) ?? [],
         workloadIds: workloads.map((row) => row.id),
         dashboardIds: dashboards.map((row) => row.id),
         deniedChildWorkloadIds: denials.map((row) => row.workload_id),
@@ -208,6 +215,10 @@ export class ClientPermissionsService {
   }
 
   async replacePermissions(actor: AuthenticatedUser, userId: number, changes: PermissionChanges) {
+    if (!this.gvui && changes.gvuiLayoutIds !== undefined) {
+      throw new BadRequestException('GV.UI Phase 2 is disabled');
+    }
+    const gvuiLayoutIds = this.gvui?.validateChanges(changes.gvuiLayoutIds);
     const workloadIds = [...new Set(changes.workloadIds)];
     const dashboardIds = [...new Set(changes.dashboardIds)];
     const deniedIds = [...new Set(changes.deniedChildWorkloadIds.map((id) => id.toLowerCase()))];
@@ -274,6 +285,9 @@ export class ClientPermissionsService {
           [actor.clientId, ...dashboardIds],
         );
         if (blockedDashboards.length) throw new BadRequestException('One or more dashboards are restricted by AMV');
+        const savedGvuiLayoutIds = await this.gvui?.replaceGrants(
+          db, actor.clientId, userId, actor.id, gvuiLayoutIds,
+        ) ?? [];
         await db.execute('DELETE FROM client_user_workload_permissions WHERE user_id=?', [userId]);
         await db.execute('DELETE FROM client_user_dashboard_permissions WHERE user_id=?', [userId]);
         await db.execute('DELETE FROM client_user_workload_denials WHERE user_id=?', [userId]);
@@ -296,7 +310,7 @@ export class ClientPermissionsService {
           );
         }
         await db.commit();
-        return { workloadIds, dashboardIds, deniedChildWorkloadIds: deniedIds };
+        return { workloadIds, dashboardIds, deniedChildWorkloadIds: deniedIds, gvuiLayoutIds: savedGvuiLayoutIds };
       } catch (error) {
         await db.rollback();
         throw error;

@@ -1,6 +1,8 @@
 import 'express-session';
 
 import type { AllowedDashboard } from '../../ampp/types/dashboard_types';
+import type { AllowedGvuiLayout } from '../../ampp-proxy/gvui/gvui.types';
+import type { GvuiMailbox } from '../../ampp-proxy/gvui/gvui-phase2.service';
 import type { AllowedWorkload } from '../../ampp/types/workload_types';
 import type { CookieJar } from 'tough-cookie';
 import type { AuthenticatedUser } from '../auth.service';
@@ -45,6 +47,10 @@ declare module 'express-session' {
     allowedWorkloads?: AllowedWorkload[];
     allowedDashboardIds?: string[];
     allowedDashboards?: AllowedDashboard[];
+    allowedGvuiLayoutIds?: string[];
+    allowedGvuiLayouts?: AllowedGvuiLayout[];
+    gvuiPhase2Enabled?: boolean;
+    gvuiMailboxes?: Record<string, GvuiMailbox>;
     amppAllowedWorkloadIds?: string[];
     amppResourceWorkloadIds?: string[];
     amppUserId?: string;
