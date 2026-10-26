@@ -425,6 +425,7 @@ describe('AuthService', () => {
       const session: any = {};
       service.applyAuthorization(session, await service.login('admin', 'password'));
       const fingerprint = session.authorizationFingerprint;
+      session.gvuiMailboxes = { old: { contextId: 'gvui-layout', upstreamId: 'mailbox', createdAt: 100000 } };
       gvuiLayouts = []; getUserLayouts.mockClear();
       clock.mockReturnValue(109999);
       expect(await service.refreshSessionAuthorization(session)).toBe(false);
@@ -434,6 +435,7 @@ describe('AuthService', () => {
       expect(session.allowedGvuiLayoutIds).toEqual([]);
       expect(session.allowedGvuiLayouts).toEqual([]);
       expect(session.authorizationFingerprint).not.toBe(fingerprint);
+      expect(session.gvuiMailboxes).toBeUndefined();
     } finally { clock.mockRestore(); }
   });
 

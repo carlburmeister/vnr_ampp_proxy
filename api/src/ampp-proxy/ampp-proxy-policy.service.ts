@@ -9,6 +9,7 @@ import type { AllowedWorkload } from '../ampp/types/workload_types';
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { getDashboardResourceIds } from './ampp-dashboard-resources';
 import { GvuiPhase1Service } from './gvui/gvui-phase1.service';
+import { GvuiPhase2Service } from './gvui/gvui-phase2.service';
 import { getDiscoveryNodeWorkloads } from './ampp-discovery-filter';
 
 const API_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -49,6 +50,7 @@ export class AmppProxyPolicyService {
   constructor(
     private readonly matrixFilter: AmppMatrixFilterService,
     private readonly gvui?: GvuiPhase1Service,
+    private readonly phase2?: GvuiPhase2Service,
   ) {}
 
   assertUiAccess(
@@ -85,7 +87,7 @@ export class AmppProxyPolicyService {
     workloadId: string,
     upstreamPath: string,
   ): string {
-    this.assertWorkloadAllowed(session.allowedWorkloads ?? [], workloadId);
+    this.assertWorkloadAllowed(session.allowedWorkloads ?? [], this.contextWorkload(session, workloadId));
 
     const target = this.parseRelativePath(upstreamPath);
 
@@ -128,7 +130,7 @@ export class AmppProxyPolicyService {
     const allowedWorkloads = session.allowedWorkloads ?? [];
     const allowedWorkloadIds = this.getAuthorizedWorkloadIds(session);
 
-    this.assertWorkloadAllowed(allowedWorkloads, workloadId);
+    this.assertWorkloadAllowed(allowedWorkloads, this.contextWorkload(session, workloadId));
 
     const normalizedMethod = method.toUpperCase();
 
@@ -137,6 +139,8 @@ export class AmppProxyPolicyService {
     }
 
     const target = this.parseRelativePath(upstreamPath);
+
+    if (this.phase2?.enabled) this.phase2.assertNotificationRequest(session, workloadId, normalizedMethod, target, body);
 
     if (
       !this.isAllowedApiRequest(
@@ -164,7 +168,7 @@ export class AmppProxyPolicyService {
     workloadId: string,
     upstreamPath: string,
   ): string {
-    this.assertWorkloadAllowed(session.allowedWorkloads ?? [], workloadId);
+    this.assertWorkloadAllowed(session.allowedWorkloads ?? [], this.contextWorkload(session, workloadId));
 
     const target = this.parseRelativePath(upstreamPath);
 
@@ -173,6 +177,12 @@ export class AmppProxyPolicyService {
     }
 
     return `${target.pathname}${target.search}`;
+  }
+
+  private contextWorkload(session: SessionData, id: string): string {
+    if (!id.startsWith('gvui-')) return id;
+    if (!this.phase2?.enabled) throw new ForbiddenException('GV.UI Phase 2 is disabled');
+    return this.phase2.contextWorkload(session, id);
   }
 
   private isAllowedApiRequest(
@@ -828,6 +838,8 @@ export class AmppProxyPolicyService {
     const normalizedId = mailboxId.toLowerCase();
 
     return (
+      (this.phase2?.enabled && session.gvuiMailboxes?.[mailboxId] &&
+        this.phase2.isAllowed(session, session.gvuiMailboxes[mailboxId].contextId)) ||
       (session.amppNotificationMailboxIds ?? []).some(
         (id) => id.toLowerCase() === normalizedId,
       ) || this.isAllowedMailboxId(mailboxId, allowedWorkloadIds)

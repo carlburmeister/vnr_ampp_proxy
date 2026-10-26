@@ -12,16 +12,13 @@ import {
   type ClientUser,
   type DiscoveredChild,
 } from '../services/clientPermissionsApi';
+import { comparablePermissions, permissionSavePayload } from '../features/gvui/gvuiPermissions';
 
 type Props = { onClose: () => void; onPermissionsSaved: () => void };
 
 const normalized = (id: string) => id.toLowerCase();
 const messageOf = (error: unknown) => error instanceof Error ? error.message : 'Unknown error';
-const sortedPermissions = (permissions: ClientPermissions) => JSON.stringify({
-  workloadIds: [...permissions.workloadIds].sort((a, b) => a - b),
-  dashboardIds: [...permissions.dashboardIds].sort((a, b) => a - b),
-  deniedChildWorkloadIds: permissions.deniedChildWorkloadIds.map(normalized).sort(),
-});
+const sortedPermissions = comparablePermissions;
 
 export function UserManagementDialog({ onClose, onPermissionsSaved }: Props) {
   const closeButton = useRef<HTMLButtonElement>(null);
@@ -114,10 +111,10 @@ export function UserManagementDialog({ onClose, onPermissionsSaved }: Props) {
     setUserId(nextId);
   }
 
-  function toggleDirect(field: 'workloadIds' | 'dashboardIds', id: number, enabled: boolean) {
+  function toggleDirect(field: 'workloadIds' | 'dashboardIds' | 'gvuiLayoutIds', id: number, enabled: boolean) {
     setDraft((current) => current && ({
       ...current,
-      [field]: enabled ? [...current[field], id] : current[field].filter((value) => value !== id),
+      [field]: enabled ? [...(current[field] ?? []), id] : (current[field] ?? []).filter((value) => value !== id),
     }));
     setNotice('');
   }
@@ -164,7 +161,7 @@ export function UserManagementDialog({ onClose, onPermissionsSaved }: Props) {
         'Changing parent assignments will remove these denials. Continue?',
       )) return;
       const changes: ClientPermissions = { ...draft, deniedChildWorkloadIds: retainedDenials };
-      const saved = await saveClientPermissions(userId, changes);
+      const saved = await saveClientPermissions(userId, permissionSavePayload(changes, resources.gvuiPhase2Enabled === true));
       setDraft(saved);
       setOriginal(saved);
       setNotice('Permissions saved. Active sessions will refresh automatically.');
@@ -266,6 +263,19 @@ export function UserManagementDialog({ onClose, onPermissionsSaved }: Props) {
                     </label>;
                   }) : <p>No dashboards configured for this client.</p>}
                 </section>
+                {resources.gvuiPhase2Enabled && <section aria-labelledby="user-management-gvui">
+                  <h3 id="user-management-gvui">GVUI Layouts</h3>
+                  <p className="user-management-hint">Layout grants are separate. Embedded applications still require their own workload permissions.</p>
+                  {resources.gvuiLayouts?.length ? resources.gvuiLayouts.map((layout) => {
+                    const accessible = !layout.associatedWorkloadId || rootIds.has(normalized(layout.associatedWorkloadId));
+                    return <label key={layout.id} className="user-management-dashboard">
+                      <input type="checkbox" checked={draft.gvuiLayoutIds?.includes(layout.id) ?? false} disabled={saving}
+                        onChange={(event) => toggleDirect('gvuiLayoutIds', layout.id, event.target.checked)} />
+                      <span>{layout.name}</span>
+                      {!accessible && <small>Requires associated workload access</small>}
+                    </label>;
+                  }) : <p>No GVUI layouts available for this client.</p>}
+                </section>}
               </div>
             ) : !error ? <p>Select a client user to manage permissions.</p> : null}
           </>

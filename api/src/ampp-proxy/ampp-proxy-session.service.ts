@@ -14,6 +14,7 @@ const SESSION_KEYS = [
   'amppMatrixAccess',
   'amppDashboardMatrixAccess',
   'amppNotificationMailboxIds',
+  'gvuiMailboxes',
 ] as const;
 
 type SessionKey = (typeof SESSION_KEYS)[number];
@@ -62,6 +63,7 @@ export class AmppProxySessionService {
             'user', 'parentWorkloadId', 'fabricId', 'nodeId',
             'allowedWorkloads', 'allowedDashboardIds', 'allowedDashboards',
             'allowedGvuiLayoutIds', 'allowedGvuiLayouts', 'gvuiPhase2Enabled',
+            'gvuiMailboxes',
             'amppAllowedWorkloadIds', 'amppResourceWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
             'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
           ] as const) {
@@ -100,6 +102,19 @@ export class AmppProxySessionService {
             snapshot.values.amppNotificationMailboxIds,
             current.amppNotificationMailboxIds,
           );
+        }
+
+        if (changedKeys.includes('gvuiMailboxes')) {
+          // Merge independent tabs by mailbox alias, preserving newer entries.
+          const merged = this.clone(latest.gvuiMailboxes ?? {});
+          const before = snapshot.values.gvuiMailboxes ?? {};
+          const after = current.gvuiMailboxes ?? {};
+          for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+            if (this.same(before[key], after[key])) continue;
+            if (!after[key]) delete merged[key];
+            else if (!merged[key] || merged[key].createdAt <= after[key].createdAt) merged[key] = this.clone(after[key]);
+          }
+          req.session.gvuiMailboxes = merged;
         }
 
         await this.saveSession(req);

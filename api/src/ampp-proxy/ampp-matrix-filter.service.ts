@@ -100,8 +100,25 @@ export class AmppMatrixFilterService {
     session: SessionData,
     workloadId: string,
     data: Buffer,
+    validateNotifications?: (strings: string[]) => boolean,
+    filterMatrix = true,
   ): Buffer | undefined {
-    if (!data.toString('utf8').toLowerCase().includes(MATRIX_TOPIC_PREFIX)) {
+    if (validateNotifications && /^[\[{]/.test(data.toString('utf8').trimStart())) {
+      try {
+        const raw = data.toString('utf8');
+        const frames = raw.split('\x1e').filter(Boolean);
+        const filtered = frames.filter((frame) => {
+          const strings: string[] = [];
+          this.collectJsonHubStrings(JSON.parse(frame) as unknown, strings, 0);
+          return validateNotifications(strings) && (!filterMatrix || this.areHubStringsAllowed(session, workloadId, strings));
+        });
+        return filtered.length ? Buffer.from(filtered.join('\x1e') + (raw.endsWith('\x1e') ? '\x1e' : '')) : undefined;
+      } catch {
+        // A MessagePack frame's length prefix can be ASCII '[' or '{'.
+        // If this was not JSON, continue through the binary parser below.
+      }
+    }
+    if (!validateNotifications && !data.toString('utf8').toLowerCase().includes(MATRIX_TOPIC_PREFIX)) {
       return data;
     }
 
@@ -114,7 +131,7 @@ export class AmppMatrixFilterService {
     }
 
     const allowedMessages = messages.filter((message) =>
-      this.isAllowedHubMessage(session, workloadId, message),
+      this.isAllowedHubMessage(session, workloadId, message, validateNotifications, filterMatrix),
     );
 
     if (!allowedMessages.length) {
@@ -653,6 +670,8 @@ export class AmppMatrixFilterService {
     session: SessionData,
     workloadId: string,
     message: Buffer,
+    validateNotifications?: (strings: string[]) => boolean,
+    filterMatrix = true,
   ): boolean {
     const strings: string[] = [];
 
@@ -662,6 +681,28 @@ export class AmppMatrixFilterService {
       return false;
     }
 
+    return (!validateNotifications || validateNotifications(strings)) && (!filterMatrix || this.areHubStringsAllowed(session, workloadId, strings));
+  }
+
+  private collectJsonHubStrings(value: unknown, strings: string[], depth: number): void {
+    if (depth > 24) throw new Error('Hub message nesting limit');
+    if (typeof value === 'string') { strings.push(value); return; }
+    if (Array.isArray(value)) { value.forEach((item) => this.collectJsonHubStrings(item, strings, depth + 1)); return; }
+    const item = this.asObject(value);
+    if (!item) return;
+    if (typeof item.topic === 'string') {
+      // Keep the complete envelope together so layout authorization can inspect
+      // object payloads as well as stringified notification content.
+      if (item.topic.toLowerCase().startsWith('gv.ui.notifications.')) strings.push(JSON.stringify(item));
+      else strings.push(item.topic, typeof item.content === 'string' ? item.content : JSON.stringify(item.content));
+      return;
+    }
+    for (const [key, entry] of Object.entries(item)) {
+      strings.push(key); this.collectJsonHubStrings(entry, strings, depth + 1);
+    }
+  }
+
+  private areHubStringsAllowed(session: SessionData, workloadId: string, strings: string[]): boolean {
     const matrixTopics = strings.filter((value) =>
       value.toLowerCase().startsWith(MATRIX_TOPIC_PREFIX),
     );

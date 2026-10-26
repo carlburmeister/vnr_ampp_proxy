@@ -60,6 +60,7 @@ describe('AMPP proxy session persistence', () => {
       authorizationFingerprint: 'granted', authorizationCheckedAt: 100,
       allowedGvuiLayouts: [{ id: 'old-layout', name: 'Old', associatedWorkloadId: null }],
       allowedGvuiLayoutIds: ['old-layout'], gvuiPhase2Enabled: false,
+      gvuiMailboxes: { stale: { contextId: 'gvui-old-layout', upstreamId: 'upstream', createdAt: 100 } },
     });
     await service.saveIfChanged(req as unknown as Request, snapshot);
     expect(req.session).toMatchObject({
@@ -67,5 +68,16 @@ describe('AMPP proxy session persistence', () => {
       authorizationFingerprint: 'revoked', authorizationCheckedAt: 200,
     });
     expect(req.session.save).not.toHaveBeenCalled();
+    expect((req.session as any).gvuiMailboxes).toBeUndefined();
+  });
+
+  it('merges mailbox ownership created concurrently by independent layout tabs', async () => {
+    const second = { contextId: 'gvui-second', upstreamId: 'second', createdAt: 200 };
+    const first = { contextId: 'gvui-first', upstreamId: 'first', createdAt: 100 };
+    const { req, service, snapshot } = setup({ gvuiMailboxes: { second } });
+    Object.assign(req.session, { gvuiMailboxes: { first } });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect((req.session as any).gvuiMailboxes).toEqual({ first, second });
+    expect(req.session.save).toHaveBeenCalledTimes(1);
   });
 });

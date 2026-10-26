@@ -25,6 +25,15 @@ export type ClientDashboard = {
 export type ClientResources = {
   workloads: ClientWorkload[];
   dashboards: ClientDashboard[];
+  gvuiLayouts?: ClientGvuiLayout[];
+  gvuiPhase2Enabled?: boolean;
+};
+
+export type ClientGvuiLayout = {
+  id: number;
+  layoutId: string;
+  name: string;
+  associatedWorkloadId: string | null;
 };
 
 export type DiscoveredChild = {
@@ -37,6 +46,7 @@ export type ClientPermissions = {
   workloadIds: number[];
   dashboardIds: number[];
   deniedChildWorkloadIds: string[];
+  gvuiLayoutIds?: number[];
 };
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {

@@ -138,6 +138,7 @@ export class AuthService {
     session.amppMatrixAccess = undefined;
     session.amppDashboardMatrixAccess = undefined;
     session.amppNotificationMailboxIds = undefined;
+    session.gvuiMailboxes = undefined;
     if (clientChanged) {
       session.amppUserId = undefined;
       session.amppAccessToken = undefined;

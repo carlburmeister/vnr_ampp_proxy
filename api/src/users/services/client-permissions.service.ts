@@ -91,6 +91,7 @@ export class ClientPermissionsService {
         this.ampp.getWorkloadName(workload.workloadId as string))),
     ]);
     return {
+      gvuiPhase2Enabled: this.gvui?.enabled ?? false,
       gvuiLayouts: resources.gvuiLayouts,
       workloads: resources.workloads.map((workload, i) => ({
         ...workload, name: workloadNames[i] || workload.name,

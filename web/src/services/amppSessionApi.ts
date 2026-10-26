@@ -41,6 +41,15 @@ export type SessionData = {
   nodeId?: string;
   allowedWorkloads: AllowedWorkload[];
   allowedDashboards: AllowedDashboard[];
+  allowedGvuiLayouts?: AllowedGvuiLayout[];
+  allowedGvuiLayoutIds?: string[];
+  gvuiPhase2Enabled?: boolean;
+};
+
+export type AllowedGvuiLayout = {
+  id: string;
+  name: string;
+  associatedWorkloadId: string | null;
 };
 
 export async function getCurrentSession(signal?: AbortSignal): Promise<SessionData | null> {

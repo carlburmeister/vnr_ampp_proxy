@@ -1,9 +1,8 @@
 # GVUI step 4: database permissions and session contracts
 
-This step changes the SPA proxy backend only. Phase 1 launch behavior and the
-frontend navigation remain unchanged. General layout launch, catalog/component
-filtering and notification isolation are step 5; user-management selectors and
-home-page placement are step 6.
+This document describes the step 4 permission contracts. The same branch now
+also implements steps 5 and 6; see [GVUI-steps-5-6.md](GVUI-steps-5-6.md) for
+launch behavior, User Management controls and combined UI acceptance checks.
 
 ## Rollout
 
@@ -18,8 +17,9 @@ continue to work, and the added response arrays are empty. Explicit GVUI grant
 changes are rejected while disabled. Enabling the flag requires the installed
 schema; database errors propagate rather than silently granting access.
 Disabling it clears effective GVUI access at the next guarded request, preserves
-stored grants and avoids further GVUI queries. It does not enable generalized
-GVUI launching or make the existing Phase 1 test path a Phase 2 authorization path.
+stored grants and avoids further GVUI queries. With steps 5 and 6, enabling it
+also enables authorized launch and navigation. The Phase 1 test path never
+provides a Phase 2 authorization shortcut.
 
 ## API contracts
 
