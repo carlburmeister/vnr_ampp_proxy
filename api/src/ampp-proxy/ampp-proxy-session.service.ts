@@ -61,6 +61,7 @@ export class AmppProxySessionService {
           for (const key of [
             'user', 'parentWorkloadId', 'fabricId', 'nodeId',
             'allowedWorkloads', 'allowedDashboardIds', 'allowedDashboards',
+            'allowedGvuiLayoutIds', 'allowedGvuiLayouts', 'gvuiPhase2Enabled',
             'amppAllowedWorkloadIds', 'amppResourceWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
             'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
           ] as const) {

@@ -1,5 +1,8 @@
 import { UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { ConfigService } from '@nestjs/config';
+import { GvuiPermissionsService } from '../../ampp-proxy/gvui/gvui-permissions.service';
+import type { AllowedGvuiLayout } from '../../ampp-proxy/gvui/gvui.types';
 
 import { AmppControlService } from '../../ampp/services/ampp-control.service';
 import { UserCredentialsRepository } from '../../users/services/user-credentials.repository';
@@ -20,8 +23,14 @@ describe('AuthService', () => {
   let getWorkloadDenials: jest.Mock;
   let findById: jest.Mock;
   let storedPasswordHash: string;
+  let phase2Enabled: boolean;
+  let gvuiLayouts: AllowedGvuiLayout[];
+  let getUserLayouts: jest.Mock;
 
   beforeEach(() => {
+    phase2Enabled = false;
+    gvuiLayouts = [];
+    getUserLayouts = jest.fn(async () => phase2Enabled ? gvuiLayouts : []);
     storedPasswordHash = 'password-hash';
     getUserDBWorkloads = jest.fn(async () => [
       {
@@ -153,7 +162,8 @@ describe('AuthService', () => {
       getWorkloadName,
     } as unknown as AmppControlService;
 
-    service = new AuthService(userCredentials, amppControl);
+    const gvui = { get enabled() { return phase2Enabled; }, getUserLayouts } as unknown as GvuiPermissionsService;
+    service = new AuthService(userCredentials, amppControl, new ConfigService(), gvui);
   });
 
   it('loads parent children first and applies individual page type overrides', async () => {
@@ -376,6 +386,104 @@ describe('AuthService', () => {
     expect(session.allowedWorkloads).toEqual([]);
     expect(session.amppAllowedWorkloadIds).toEqual([]);
     expect(session.amppResourceWorkloadIds).toEqual([]);
+  });
+
+  it('filters GVUI workload associations without expanding embedded resource access', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    const previous = await service.login('admin', 'password');
+    phase2Enabled = true;
+    gvuiLayouts = [
+      { id: 'top-level', name: 'Top', associatedWorkloadId: null },
+      { id: 'associated', name: 'Associated', associatedWorkloadId: 'DIRECT-WORKLOAD-001' },
+      { id: 'unavailable', name: 'Unavailable', associatedWorkloadId: 'ungranted-workload' },
+    ];
+    const result = await service.login('admin', 'password');
+    expect(result.allowedGvuiLayoutIds).toEqual(['top-level', 'associated']);
+    expect(result.allowedWorkloads).toEqual(previous.allowedWorkloads);
+    expect(result.amppAllowedWorkloadIds).toEqual(previous.amppAllowedWorkloadIds);
+    expect(result.amppResourceWorkloadIds).toEqual(previous.amppResourceWorkloadIds);
+    expect(getUserLayouts).toHaveBeenLastCalledWith('mock-user-001', 1);
+  });
+
+  it('allows a top-level GVUI grant without manufacturing a workload or launch context', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    phase2Enabled = true;
+    gvuiLayouts = [{ id: 'top', name: 'Top', associatedWorkloadId: null }];
+    getUserDBWorkloads.mockResolvedValue([]); getUserDashboards.mockResolvedValue([]);
+    const result = await service.login('admin', 'password');
+    expect(result.allowedGvuiLayoutIds).toEqual(['top']);
+    expect(result.amppAllowedWorkloadIds).toEqual([]);
+    expect(result.parentWorkloadId).toBeUndefined(); expect(getWorkload).not.toHaveBeenCalled();
+  });
+
+  it('refreshes revoked grants within the existing authorization interval', async () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(100000);
+    try {
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+      phase2Enabled = true;
+      gvuiLayouts = [{ id: 'layout', name: 'Layout', associatedWorkloadId: null }];
+      const session: any = {};
+      service.applyAuthorization(session, await service.login('admin', 'password'));
+      const fingerprint = session.authorizationFingerprint;
+      gvuiLayouts = []; getUserLayouts.mockClear();
+      clock.mockReturnValue(109999);
+      expect(await service.refreshSessionAuthorization(session)).toBe(false);
+      expect(getUserLayouts).not.toHaveBeenCalled();
+      clock.mockReturnValue(110000);
+      expect(await service.refreshSessionAuthorization(session)).toBe(true);
+      expect(session.allowedGvuiLayoutIds).toEqual([]);
+      expect(session.allowedGvuiLayouts).toEqual([]);
+      expect(session.authorizationFingerprint).not.toBe(fingerprint);
+    } finally { clock.mockRestore(); }
+  });
+
+  it('includes GVUI names and associations in authorization fingerprints', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    phase2Enabled = true;
+    gvuiLayouts = [{ id: 'layout', name: 'Original', associatedWorkloadId: null }];
+    const session: any = {};
+    service.applyAuthorization(session, await service.login('admin', 'password'));
+    const original = session.authorizationFingerprint;
+    gvuiLayouts = [{ id: 'layout', name: 'Renamed', associatedWorkloadId: 'denied-workload' }];
+    session.authorizationCheckedAt = 0;
+    await service.refreshSessionAuthorization(session);
+    expect(session.authorizationFingerprint).not.toBe(original);
+    expect(session.allowedGvuiLayouts).toEqual([]);
+  });
+
+  it('refreshes old sessions missing GVUI fields immediately even with a matching fingerprint', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    phase2Enabled = true;
+    gvuiLayouts = [{ id: 'layout', name: 'Layout', associatedWorkloadId: null }];
+    const session: any = {};
+    service.applyAuthorization(session, await service.login('admin', 'password'));
+    delete session.allowedGvuiLayouts; delete session.allowedGvuiLayoutIds;
+    expect(await service.refreshSessionAuthorization(session)).toBe(true);
+    expect(session.allowedGvuiLayoutIds).toEqual(['layout']);
+    expect(session.allowedGvuiLayouts).toEqual(gvuiLayouts);
+  });
+
+  it('clears Phase 2 grants immediately when its flag is disabled', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    phase2Enabled = true;
+    gvuiLayouts = [{ id: 'layout', name: 'Layout', associatedWorkloadId: null }];
+    const session: any = {};
+    service.applyAuthorization(session, await service.login('admin', 'password'));
+    phase2Enabled = false;
+    expect(await service.refreshSessionAuthorization(session)).toBe(true);
+    expect(session.allowedGvuiLayoutIds).toEqual([]);
+    expect(session.gvuiPhase2Enabled).toBe(false);
+  });
+
+  it('does not advance the refresh deadline or authorize a request after a GVUI database failure', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    phase2Enabled = true;
+    const session: any = {};
+    service.applyAuthorization(session, await service.login('admin', 'password'));
+    session.authorizationCheckedAt = 0;
+    getUserLayouts.mockRejectedValue(new Error('GVUI tables unavailable'));
+    await expect(service.refreshSessionAuthorization(session)).rejects.toThrow('GVUI tables unavailable');
+    expect(session.authorizationCheckedAt).toBe(0);
   });
 
 });

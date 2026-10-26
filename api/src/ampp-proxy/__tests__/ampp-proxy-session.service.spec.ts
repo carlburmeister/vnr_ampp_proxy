@@ -50,4 +50,22 @@ describe('AMPP proxy session persistence', () => {
     await service.saveIfChanged(req as unknown as Request, snapshot);
     expect(req.session.save).not.toHaveBeenCalled();
   });
+
+  it('copies newer GVUI authorization without restoring revoked access', async () => {
+    const { req, service, snapshot } = setup({
+      authorizationFingerprint: 'revoked', authorizationCheckedAt: 200,
+      allowedGvuiLayouts: [], allowedGvuiLayoutIds: [], gvuiPhase2Enabled: true,
+    });
+    Object.assign(req.session, {
+      authorizationFingerprint: 'granted', authorizationCheckedAt: 100,
+      allowedGvuiLayouts: [{ id: 'old-layout', name: 'Old', associatedWorkloadId: null }],
+      allowedGvuiLayoutIds: ['old-layout'], gvuiPhase2Enabled: false,
+    });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect(req.session).toMatchObject({
+      allowedGvuiLayouts: [], allowedGvuiLayoutIds: [], gvuiPhase2Enabled: true,
+      authorizationFingerprint: 'revoked', authorizationCheckedAt: 200,
+    });
+    expect(req.session.save).not.toHaveBeenCalled();
+  });
 });
