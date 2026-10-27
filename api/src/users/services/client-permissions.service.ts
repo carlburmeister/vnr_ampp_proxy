@@ -91,7 +91,6 @@ export class ClientPermissionsService {
         this.ampp.getWorkloadName(workload.workloadId as string))),
     ]);
     return {
-      gvuiPhase2Enabled: this.gvui?.enabled ?? false,
       gvuiLayouts: resources.gvuiLayouts,
       workloads: resources.workloads.map((workload, i) => ({
         ...workload, name: workloadNames[i] || workload.name,
@@ -216,7 +215,7 @@ export class ClientPermissionsService {
 
   async replacePermissions(actor: AuthenticatedUser, userId: number, changes: PermissionChanges) {
     if (!this.gvui && changes.gvuiLayoutIds !== undefined) {
-      throw new BadRequestException('GV.UI Phase 2 is disabled');
+      throw new BadRequestException('GV.UI permission service is unavailable');
     }
     const gvuiLayoutIds = this.gvui?.validateChanges(changes.gvuiLayoutIds);
     const workloadIds = [...new Set(changes.workloadIds)];

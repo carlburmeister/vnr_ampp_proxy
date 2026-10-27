@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { componentHarness } from './helpers/componentHarness.mjs';
-import { comparablePermissions, permissionSavePayload } from '../src/features/gvui/gvuiPermissions.ts';
+import { comparablePermissions } from '../src/features/gvui/gvuiPermissions.ts';
 import { getGvuiLaunchUrl } from '../src/features/gvui/gvuiLaunch.ts';
 
 const A = '11111111-1111-4111-8111-111111111111', B = '22222222-2222-4222-8222-222222222222';
@@ -14,18 +14,16 @@ test('GVUI grants participate in dirty comparison without changing omission sema
   const original = permission();
   assert.notEqual(comparablePermissions(original), comparablePermissions({ ...original, gvuiLayoutIds: [21] }));
   assert.equal(comparablePermissions({ ...original, gvuiLayoutIds: [22, 21] }), comparablePermissions({ ...original, gvuiLayoutIds: [21, 22] }));
-  assert.equal(permissionSavePayload({ ...original, gvuiLayoutIds: [21] }, false).gvuiLayoutIds, undefined);
-  assert.deepEqual(permissionSavePayload(original, true).gvuiLayoutIds, []);
 });
 
-async function editor(t, enabled = true, empty = false) {
+async function editor(t, empty = false) {
   const requests: { path: string; options: RequestInit }[] = [];
   let saved = permission();
   const api = async (path: string, options: RequestInit = {}) => {
     requests.push({ path, options });
     let body: unknown;
     if (path.endsWith('/users')) body = [{ id: 2, username: 'test-user', userType: 'user' }];
-    else if (path.endsWith('/resources')) body = { gvuiPhase2Enabled: enabled,
+    else if (path.endsWith('/resources')) body = {
       workloads: [{ id: 7, workloadId: W, name: 'Mixer', isParent: 0 }], dashboards: [],
       gvuiLayouts: empty ? [] : [{ ...layouts[0], id: 21, layoutId: A }, { ...layouts[1], id: 22, layoutId: B }] };
     else if (options.method === 'PUT') { saved = JSON.parse(String(options.body)); body = saved; }
@@ -53,30 +51,20 @@ test('User Management checks and unchecks GVUI grants, saves them and preserves 
   save().props.onClick(); await h.flush(); assert.deepEqual(saved().gvuiLayoutIds, []);
 });
 
-test('disabled mode hides the editor section and omits GVUI changes from unrelated saves', async (t) => {
-  const { h, saved } = await editor(t, false);
-  assert.equal(h.all((node) => node.props?.id === 'user-management-gvui').length, 0);
-  const checkbox = h.all((node) => type(node, 'input') && node.props.type === 'checkbox')[0];
-  checkbox.props.onChange({ target: { checked: false } }); await h.flush();
-  h.all((node) => type(node, 'button') && h.text(node) === 'Save Permissions')[0].props.onClick(); await h.flush();
-  assert.equal(Object.hasOwn(saved(), 'gvuiLayoutIds'), false);
-});
-
-test('empty resources and inaccessible workload associations have clear editor messages', async (t) => {
-  const { h } = await editor(t, true, true);
+test('empty resources have a clear editor message', async (t) => {
+  const { h } = await editor(t, true);
   assert.match(h.text(h.tree()), /No GVUI layouts available for this client/);
 });
 
 function homeSession() {
-  return { user: { userType: 'admin', displayName: 'Test', username: 'test' }, gvuiPhase2Enabled: true,
+  return { user: { userType: 'admin', displayName: 'Test', username: 'test' },
     allowedWorkloads: [{ id: W, name: 'Mixer', is_parent: 0, pageType: 'ampp-ui' }], allowedDashboards: [], allowedGvuiLayouts: layouts };
 }
 
-test('home page places top-level/associated layouts and removes the POC button in Phase 2', async (t) => {
+test('home page places top-level/associated layouts without an activation flag', async (t) => {
   const h = componentHarness('components/UserHomePage.tsx', 'UserHomePage', { session: homeSession() }); t.after(() => h.unmount());
   const buttons = () => h.all((node) => type(node, 'GvuiLayoutButton'));
   assert.deepEqual(buttons().map((node) => node.props.layout.id), [A]);
-  assert.equal(h.all((node) => type(node, 'GvuiPhase1Button')).length, 0);
   h.all((node) => node.props?.['aria-label'] === 'Toggle assigned resources for Mixer')[0].props.onClick(); await h.flush();
   assert.deepEqual(buttons().map((node) => node.props.layout.id), [B, A]);
   h.update({ session: { ...homeSession(), allowedGvuiLayouts: [] } });
@@ -87,9 +75,8 @@ test('a top-level GVUI button appears even without assigned workloads', (t) => {
   const h = componentHarness('components/UserHomePage.tsx', 'UserHomePage', { session: { ...homeSession(), allowedWorkloads: [] } });
   t.after(() => h.unmount());
   assert.equal(h.all((node) => type(node, 'GvuiLayoutButton')).length, 1);
-  h.update({ session: { ...homeSession(), gvuiPhase2Enabled: false } });
+  h.update({ session: { ...homeSession(), allowedGvuiLayouts: [] } });
   assert.equal(h.all((node) => type(node, 'GvuiLayoutButton')).length, 0);
-  assert.equal(h.all((node) => type(node, 'GvuiPhase1Button')).length, 1);
 });
 
 test('launches use separate server-authorized addresses and retain popup handles across async work', async (t) => {

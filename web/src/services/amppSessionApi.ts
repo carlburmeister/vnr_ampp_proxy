@@ -43,7 +43,6 @@ export type SessionData = {
   allowedDashboards: AllowedDashboard[];
   allowedGvuiLayouts?: AllowedGvuiLayout[];
   allowedGvuiLayoutIds?: string[];
-  gvuiPhase2Enabled?: boolean;
 };
 
 export type AllowedGvuiLayout = {

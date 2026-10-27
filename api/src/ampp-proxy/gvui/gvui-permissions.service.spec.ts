@@ -1,5 +1,4 @@
 import { BadRequestException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 
@@ -8,7 +7,7 @@ import { UserCredentialsRepository } from '../../users/services/user-credentials
 import { GvuiPermissionsService } from './gvui-permissions.service';
 
 describe('GVUI database permission contracts', () => {
-  function setup(flag?: string) {
+  function setup() {
     const db = {
       execute: jest
         .fn<Promise<[unknown[]]>, [string, unknown[]]>()
@@ -24,30 +23,22 @@ describe('GVUI database permission contracts', () => {
     };
     const service = new GvuiPermissionsService(
       users as unknown as UserCredentialsRepository,
-      new ConfigService({ GVUI_PHASE2_ENABLED: flag }),
     );
     return { db, users, service };
   }
 
-  it.each([undefined, 'false', 'TRUE', '1'])(
-    'makes no GVUI table reads/writes with flag %s',
-    async (flag) => {
-      const { db, users, service } = setup(flag);
-      expect(await service.listAssignments(db as never, 1)).toEqual([]);
-      expect(await service.getGrantedIds(db as never, 7, 1)).toEqual([]);
-      expect(await service.getUserLayouts('7', 1)).toEqual([]);
-      expect(
-        await service.replaceGrants(db as never, 1, 7, '1', undefined),
-      ).toEqual([]);
-      expect(() => service.validateChanges([])).toThrow(BadRequestException);
-      expect(db.execute).not.toHaveBeenCalled();
-      expect(db.query).not.toHaveBeenCalled();
-      expect(users.withConnection).not.toHaveBeenCalled();
-    },
-  );
+  it('queries permissions without any activation configuration', async () => {
+    const { db, users, service } = setup();
+    await service.listAssignments(db as never, 1);
+    await service.getGrantedIds(db as never, 7, 1);
+    await service.getUserLayouts('7', 1);
+    expect(db.execute).toHaveBeenCalledTimes(3);
+    expect(users.withConnection).toHaveBeenCalledTimes(1);
+    expect(service.validateChanges([])).toEqual([]);
+  });
 
   it('uses assignment row IDs in management APIs, but UUIDs for session authorization', async () => {
-    const { db, service } = setup('true');
+    const { db, service } = setup();
     db.execute
       .mockResolvedValueOnce([
         [
@@ -77,8 +68,8 @@ describe('GVUI database permission contracts', () => {
     expect(params).toEqual([1, '7']);
   });
 
-  it('fails closed when enabled tables cannot be read', async () => {
-    const { db, service } = setup('true');
+  it('fails closed when required tables cannot be read', async () => {
+    const { db, service } = setup();
     db.execute.mockRejectedValue(new Error('Table does not exist'));
     await expect(service.getUserLayouts('7', 1)).rejects.toThrow(
       'Table does not exist',
@@ -86,7 +77,7 @@ describe('GVUI database permission contracts', () => {
   });
 
   it('preserves omission, deduplicates valid IDs and rejects invalid service inputs', () => {
-    const { service } = setup('true');
+    const { service } = setup();
     expect(service.validateChanges(undefined)).toBeUndefined();
     expect(service.validateChanges([16, 16])).toEqual([16]);
     for (const value of [

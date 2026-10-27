@@ -1,4 +1,3 @@
-import { ConfigService } from '@nestjs/config';
 import type { PoolConnection } from 'mysql2/promise';
 import { GvuiPermissionsService } from '../../src/ampp-proxy/gvui/gvui-permissions.service';
 import { AmppControlService } from '../../src/ampp/services/ampp-control.service';
@@ -7,7 +6,7 @@ import { ClientPermissionsService } from '../../src/users/services/client-permis
 import { UserCredentialsRepository } from '../../src/users/services/user-credentials.repository';
 
 // Isolated SQL adapter: no database, accounts or AMPP service are created.
-export function setupGvuiPermissions(enabled = true) {
+export function setupGvuiPermissions() {
   const actor: AuthenticatedUser = {
     id: '1',
     username: 'admin',
@@ -130,8 +129,7 @@ export function setupGvuiPermissions(enabled = true) {
     withConnection: <T>(callback: (connection: PoolConnection) => Promise<T>) =>
       callback(db as unknown as PoolConnection),
   } as UserCredentialsRepository;
-  const config = new ConfigService({ GVUI_PHASE2_ENABLED: String(enabled) });
-  const gvui = new GvuiPermissionsService(users, config);
+  const gvui = new GvuiPermissionsService(users);
   const ampp = {
     getDashboardNames: jest.fn(() => Promise.resolve(new Map())),
     getWorkloadName: jest.fn(() => Promise.resolve(undefined)),
@@ -146,5 +144,5 @@ export function setupGvuiPermissions(enabled = true) {
     dashboardIds: [],
     deniedChildWorkloadIds: [],
   };
-  return { actor, state, db, service, changes, run, config };
+  return { actor, state, db, service, changes, run };
 }

@@ -8,8 +8,7 @@ import type { SessionData } from 'express-session';
 import type { AllowedWorkload } from '../ampp/types/workload_types';
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { getDashboardResourceIds } from './ampp-dashboard-resources';
-import { GvuiPhase1Service } from './gvui/gvui-phase1.service';
-import { GvuiPhase2Service } from './gvui/gvui-phase2.service';
+import { GvuiProxyService } from './gvui/gvui-proxy.service';
 import { getDiscoveryNodeWorkloads } from './ampp-discovery-filter';
 
 const API_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -49,8 +48,7 @@ const MATRIX_READ_PATHS = new Set([
 export class AmppProxyPolicyService {
   constructor(
     private readonly matrixFilter: AmppMatrixFilterService,
-    private readonly gvui?: GvuiPhase1Service,
-    private readonly phase2?: GvuiPhase2Service,
+    private readonly gvui?: GvuiProxyService,
   ) {}
 
   assertUiAccess(
@@ -99,7 +97,7 @@ export class AmppProxyPolicyService {
 
     if (/^\/gvui(?:\/|$)/i.test(target.pathname)) {
       this.gvui?.assertUiPath(session, workloadId, target);
-      if (!this.gvui) throw new ForbiddenException('GV.UI is not enabled');
+      if (!this.gvui) throw new ForbiddenException('GV.UI proxy is unavailable');
     }
 
     const dashboardId = this.getDashboardId(target.pathname);
@@ -140,7 +138,7 @@ export class AmppProxyPolicyService {
 
     const target = this.parseRelativePath(upstreamPath);
 
-    if (this.phase2?.enabled) this.phase2.assertNotificationRequest(session, workloadId, normalizedMethod, target, body);
+    if (this.gvui) this.gvui.assertNotificationRequest(session, workloadId, normalizedMethod, target, body);
 
     if (
       !this.isAllowedApiRequest(
@@ -181,8 +179,8 @@ export class AmppProxyPolicyService {
 
   private contextWorkload(session: SessionData, id: string): string {
     if (!id.startsWith('gvui-')) return id;
-    if (!this.phase2?.enabled) throw new ForbiddenException('GV.UI Phase 2 is disabled');
-    return this.phase2.contextWorkload(session, id);
+    if (!this.gvui) throw new ForbiddenException('GV.UI proxy is unavailable');
+    return this.gvui.contextWorkload(session, id);
   }
 
   private isAllowedApiRequest(
@@ -200,7 +198,7 @@ export class AmppProxyPolicyService {
       return true;
     }
 
-    if (this.gvui?.isCatalogAllowed(session, workloadId, method, target)) {
+    if (method === 'GET' && this.gvui?.isCatalogRequest(target) && this.gvui.isAllowed(session, workloadId)) {
       return true;
     }
 
@@ -637,7 +635,7 @@ export class AmppProxyPolicyService {
         Object.keys(parsed).length === 5 &&
         typeof id === 'string' &&
         (this.isAllowedMailboxId(id, allowedWorkloadIds) ||
-          (this.gvui?.isMailboxIdAllowed(session, workloadId, id) ?? false) ||
+          (this.gvui?.canCreateMailbox(session, workloadId, id) ?? false) ||
           (dashboardScope &&
             (/^ts-cluster\.systemdashboard--[0-9a-f-]{36}$/i.test(id) ||
               proxiedDashboardMailbox?.[1].toLowerCase() ===
@@ -838,8 +836,8 @@ export class AmppProxyPolicyService {
     const normalizedId = mailboxId.toLowerCase();
 
     return (
-      (this.phase2?.enabled && session.gvuiMailboxes?.[mailboxId] &&
-        this.phase2.isAllowed(session, session.gvuiMailboxes[mailboxId].contextId)) ||
+      (this.gvui && session.gvuiMailboxes?.[mailboxId] &&
+        this.gvui.isAllowed(session, session.gvuiMailboxes[mailboxId].contextId)) ||
       (session.amppNotificationMailboxIds ?? []).some(
         (id) => id.toLowerCase() === normalizedId,
       ) || this.isAllowedMailboxId(mailboxId, allowedWorkloadIds)
