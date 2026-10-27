@@ -1,36 +1,7 @@
 # Project TODO List
 
-- [ ] Implement unsubscribing from keyframe notifications 
-- [ ] Types do not always match runtime data
+- [ ] Color code workload, dashboard, and GVUIn selector buttons in users list of allowed resources
 
-        listWorkloadNamesForApplicationType() is typed as returning string[] on the backend/SDK side, but the frontend expects objects:
+- [ ] Removing permissions on a second parent workload when MiniMixer was already opened caused MiniMixer producer assignment to fail: disallowed worklaods were displayed in list and exedcuting an assignment failed. Refreshing the MiniMixer page showed the correct list of allowed producers and assignment worked again.
 
-        {
-        id: string;
-        name: string;
-        externalPackage: boolean;
-        applicationType: string;
-        }
-
-        The runtime response likely is an object array, so the TypeScript types should be fixed.
-
-- [ ] Implement Database lookup of username and password and return the json object that will be passed to Nest via api/ampp/session/bootstrap:
-            curl -i -X POST http://localhost:3000/api/ampp/session/bootstrap \
-            -H "Content-Type: application/json" \
-            -d '{
-                "platformUserId": "mock-user-123",
-                "displayName": "Mock AMPP Operator",
-                "sessionId": "mock-session-abc",
-                "tenantId": "mock-tenant-main",
-                "assignedWorkloads": [
-                {
-                    "id": "workload-001",
-                    "name": "Main Program Output",
-                    "applicationName": "AMPP Control"
-                },
-                {
-                    "name": "Graphics Workload",
-                    "applicationName": "AMPP Graphics"
-                }
-                ]
-            }'
+- [ ] Change title of SPA main user page from 'web' to 'AMVVPP - home/resources' or something similar.
