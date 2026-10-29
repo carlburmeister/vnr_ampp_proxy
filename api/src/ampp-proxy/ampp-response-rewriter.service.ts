@@ -2,6 +2,7 @@ import { BadGatewayException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import type { AmppCookieHttpResponse } from './ampp-cookie-http.service';
+import { createAmppBrowserDiagnosticsScript } from './ampp-browser-diagnostics';
 
 export type AmppBrowserResponse = {
   status: number;
@@ -315,7 +316,11 @@ export class AmppResponseRewriterService {
 
     return this.insertIntoHead(
       rewritten,
-      this.createRuntimeRewriteScript(responseUrl, workloadId),
+      this.createRuntimeRewriteScript(responseUrl, workloadId) +
+        // Temporary, opt-in GVUI browser diagnostics; remove with its module.
+        (this.config.get<string>('AMPP_PROXY_BROWSER_DIAGNOSTICS') === 'true'
+          ? createAmppBrowserDiagnosticsScript(workloadId)
+          : ''),
     );
   }
 

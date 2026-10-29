@@ -8,6 +8,7 @@ const PUBLIC_ORIGIN = 'http://localhost:8081';
 describe('AmppResponseRewriterService', () => {
   const service = new AmppResponseRewriterService({
     getOrThrow: () => PLATFORM_URL,
+    get: () => undefined,
   } as any);
 
   it('caches unmodified wrapper JavaScript privately and preserves validators', () => {
