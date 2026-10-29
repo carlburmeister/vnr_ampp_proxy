@@ -1,6 +1,7 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+import { createAmppRedirectStorageScript } from './ampp-redirect-storage';
 import type { AmppCookieHttpResponse } from './ampp-cookie-http.service';
 
 export type AmppBrowserResponse = {
@@ -693,7 +694,7 @@ const nativeSetAttribute=Element.prototype.setAttribute;Element.prototype.setAtt
 const nativeWindowOpen=window.open.bind(window);window.open=function(url){if(arguments.length)arguments[0]=rewriteHttp(url);return nativeWindowOpen.apply(window,arguments);};
 document.addEventListener('click',function(event){const link=event.target instanceof Element?event.target.closest('a[href]'):null;if(link)link.href=rewriteHttp(link.href);},true);
 document.addEventListener('submit',function(event){const form=event.target;if(form instanceof HTMLFormElement)form.action=rewriteHttp(form.action);},true);
-})();</script>`;
+})();</script>` + createAmppRedirectStorageScript(workloadId, responsePath.pathname);
   }
 
   private insertIntoHead(html: string, value: string): string {
