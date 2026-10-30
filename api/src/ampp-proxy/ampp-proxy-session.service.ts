@@ -3,14 +3,18 @@ import type { Request } from 'express';
 import type { SessionData } from 'express-session';
 
 import type {
+  AmppAccessToken,
   AmppDashboardMatrixAccess,
   AmppMatrixAccess,
 } from '../auth/types/session-data';
+import { newerAmppAccessToken } from './ampp-access-tokens';
 
 const SESSION_KEYS = [
   'amppUserId',
   'amppCookieJar',
   'amppAccessToken',
+  'amppAccessTokens',
+  'amppTokenGeneration',
   'amppMatrixAccess',
   'amppDashboardMatrixAccess',
   'amppNotificationMailboxIds',
@@ -61,13 +65,18 @@ export class AmppProxySessionService {
         if (latest.authorizationFingerprint !== req.session.authorizationFingerprint) {
           for (const key of [
             'user', 'parentWorkloadId', 'fabricId', 'nodeId',
+            'amppAccessToken',
+            'amppAccessTokens',
+            'amppTokenGeneration',
+            'amppCookieJar',
+            'amppUserId',
             'allowedWorkloads', 'allowedDashboardIds', 'allowedDashboards',
             'allowedGvuiLayoutIds', 'allowedGvuiLayouts',
             'gvuiMailboxes',
             'amppAllowedWorkloadIds', 'amppResourceWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
             'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
           ] as const) {
-            (req.session as any)[key] = this.clone(latest[key]);
+            (req.session as any)[key] = this.clone<unknown>(latest[key]);
           }
           // Do not merge data derived under revoked permissions.
           return;
@@ -77,6 +86,31 @@ export class AmppProxySessionService {
           if (!changedKeys.includes(key)) {
             this.setValue(req.session, key, latest[key]);
           }
+        }
+
+        // A reset wins over responses started under the previous authentication.
+        const beforeGeneration = snapshot.values.amppTokenGeneration;
+        if (
+          latest.amppTokenGeneration !== beforeGeneration &&
+          latest.amppTokenGeneration !== current.amppTokenGeneration
+        ) {
+          for (const key of [
+            'amppAccessTokens',
+            'amppAccessToken',
+            'amppTokenGeneration',
+            'amppCookieJar',
+            'amppUserId',
+          ] as const)
+            this.setValue(req.session, key, latest[key]);
+        } else if (current.amppTokenGeneration !== beforeGeneration) {
+          req.session.amppAccessTokens = this.clone(current.amppAccessTokens);
+          req.session.amppAccessToken = current.amppAccessToken;
+        } else if (changedKeys.includes('amppAccessTokens')) {
+          req.session.amppAccessTokens = this.mergeAccessTokens(
+            snapshot.values.amppAccessTokens,
+            current.amppAccessTokens,
+            latest.amppAccessTokens,
+          );
         }
 
         if (changedKeys.includes('amppMatrixAccess')) {
@@ -129,6 +163,31 @@ export class AmppProxySessionService {
         this.saveQueues.delete(req.sessionID);
       }
     }
+  }
+
+  private mergeAccessTokens(
+    before: Record<string, AmppAccessToken> = {},
+    after: Record<string, AmppAccessToken> = {},
+    latest: Record<string, AmppAccessToken> = {},
+  ): Record<string, AmppAccessToken> {
+    const merged = this.clone(latest);
+    for (const clientId of new Set([
+      ...Object.keys(before),
+      ...Object.keys(after),
+    ])) {
+      if (this.same(before[clientId], after[clientId])) continue;
+      if (!after[clientId]) {
+        // A rejected/expired token must not remove a concurrent replacement.
+        if (this.same(before[clientId], merged[clientId]))
+          delete merged[clientId];
+      } else if (
+        !merged[clientId] ||
+        newerAmppAccessToken(after[clientId], merged[clientId])
+      ) {
+        merged[clientId] = this.clone(after[clientId]);
+      }
+    }
+    return merged;
   }
 
   private mergeMatrixAccess(

@@ -17,6 +17,7 @@ import type {
 import { UserCredentialsRepository, type UserCredentialRecord } from '../users/services/user-credentials.repository';
 import { GvuiPermissionsService } from '../ampp-proxy/gvui/gvui-permissions.service';
 import type { AllowedGvuiLayout } from '../ampp-proxy/gvui/gvui.types';
+import { clearAmppAccessTokens } from '../ampp-proxy/ampp-access-tokens';
 
 export type AuthenticatedUser = {
   id: string;
@@ -141,7 +142,7 @@ export class AuthService {
     session.gvuiMailboxes = undefined;
     if (clientChanged) {
       session.amppUserId = undefined;
-      session.amppAccessToken = undefined;
+      clearAmppAccessTokens(session);
       session.amppCookieJar = undefined;
     }
     return true;
