@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { SessionData } from 'express-session';
 
 import { GVPlatform } from '../ampp/sdk/GVPlatform';
+import { migrateAmppAccessToken } from './ampp-access-tokens';
 
 const TOKEN_REFRESH_MARGIN_MS = 60_000;
 
@@ -13,23 +14,53 @@ export class AmppBearerTokenService {
 
   constructor(private readonly config: ConfigService) {}
 
-  getSessionToken(session: SessionData): string | undefined {
-    const token = session.amppAccessToken;
-
-    if (!token) {
-      return undefined;
+  getSessionToken(
+    session: SessionData,
+    method = 'GET',
+    upstreamPath = '/',
+  ): string | undefined {
+    migrateAmppAccessToken(session);
+    const path = new URL(upstreamPath, 'http://ampp-proxy.local').pathname;
+    // AMPP Store is a platform API despite its /cluster/store prefix.
+    const scope =
+      /^\/(?:cluster\/(?:state|control|matrix|fabric|snapshot)\/api|mocha\/application\/[^/]+\/api)(?:\/|$)/i.test(
+        path,
+      )
+        ? 'cluster'
+        : path === '/' ||
+            /^\/(?:(?:identity|configuration|discovery|logging|notifications|hubmanager|ampp\/control)\/api(?:\/|$)|cluster\/store\/api(?:\/|$)|api\/v1\/store(?:\/|$)|pushnotificationshub(?:\/|$))/i.test(
+              path,
+            )
+          ? 'platform'
+          : undefined;
+    const readOnly = ['GET', 'HEAD'].includes(method.toUpperCase());
+    const tokens = session.amppAccessTokens ?? {};
+    for (const [key, entry] of Object.entries(tokens)) {
+      if (entry.expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS)
+        delete tokens[key];
     }
-
-    if (!this.tokenIsUsable(token)) {
-      delete session.amppAccessToken;
-      return undefined;
-    }
-
-    return token;
+    // The policy still authorizes the request; unknown API families use the
+    // existing server authentication fallback rather than assuming a scope.
+    if (!scope) return undefined;
+    return Object.values(tokens)
+      .filter(
+        (entry) =>
+          entry.scopes.includes(scope) ||
+          (readOnly && entry.scopes.includes(`${scope}.readonly`)),
+      )
+      .sort(
+        (left, right) =>
+          left.scopes.length - right.scopes.length ||
+          right.issuedAt - left.issuedAt ||
+          right.expiresAt - left.expiresAt,
+      )[0]?.token;
   }
 
-  clearSessionToken(session: SessionData): void {
-    delete session.amppAccessToken;
+  clearSessionToken(session: SessionData, token: string): void {
+    migrateAmppAccessToken(session);
+    for (const [key, entry] of Object.entries(session.amppAccessTokens ?? {})) {
+      if (entry.token === token) delete session.amppAccessTokens[key];
+    }
   }
 
   async getToken(): Promise<string> {
@@ -57,7 +88,7 @@ export class AmppBearerTokenService {
       return this.client;
     }
 
-    if (!this.loginPromise) {
+    if (this.loginPromise === undefined) {
       this.loginPromise = this.login();
     }
 

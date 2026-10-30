@@ -3,6 +3,7 @@ import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
 import { GvuiPermissionsService } from '../../ampp-proxy/gvui/gvui-permissions.service';
 import type { AllowedGvuiLayout } from '../../ampp-proxy/gvui/gvui.types';
+import type { SessionData } from 'express-session';
 
 import { AmppControlService } from '../../ampp/services/ampp-control.service';
 import { UserCredentialsRepository } from '../../users/services/user-credentials.repository';
@@ -468,6 +469,43 @@ describe('AuthService', () => {
     expect(await service.refreshSessionAuthorization(session)).toBe(true);
     expect(session.authorizationFingerprint).toMatch(/^gvui-v2:/);
     expect(session.allowedGvuiLayoutIds).toEqual(['layout']);
+  });
+
+  it('clears server bearer tokens and upstream identity after a client change', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    const session = {} as SessionData;
+    service.applyAuthorization(
+      session,
+      await service.login('admin', 'password'),
+    );
+    session.authorizationCheckedAt = 0;
+    session.amppAccessToken = 'legacy';
+    session.amppAccessTokens = {
+      wrapper: {
+        clientId: 'wrapper',
+        token: 'cached',
+        scopes: ['platform'],
+        issuedAt: 0,
+        expiresAt: 0,
+      },
+    };
+    Object.assign(session, { amppCookieJar: { cookies: [] } });
+    session.amppUserId = 'upstream-user';
+    findById.mockResolvedValue({
+      id: 'mock-user-001',
+      username: 'admin',
+      displayName: 'Mock AMVVPP Operator',
+      passwordHash: storedPasswordHash,
+      clientId: 2,
+      userType: 'user',
+    });
+    await service.refreshSessionAuthorization(session);
+    expect(session.user.clientId).toBe(2);
+    expect(session.amppAccessToken).toBeUndefined();
+    expect(session.amppAccessTokens).toBeUndefined();
+    expect(session.amppCookieJar).toBeUndefined();
+    expect(session.amppUserId).toBeUndefined();
+    expect(session.amppTokenGeneration).toEqual(expect.any(String));
   });
 
   it('does not advance the refresh deadline or authorize a request after a GVUI database failure', async () => {

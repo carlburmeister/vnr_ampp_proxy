@@ -7,6 +7,14 @@ import type { AllowedWorkload } from '../../ampp/types/workload_types';
 import type { CookieJar } from 'tough-cookie';
 import type { AuthenticatedUser } from '../auth.service';
 
+export type AmppAccessToken = {
+  clientId: string;
+  token: string;
+  scopes: string[];
+  expiresAt: number;
+  issuedAt: number;
+};
+
 export type AmppMatrixAccess = Record<
   string,
   {
@@ -55,6 +63,8 @@ declare module 'express-session' {
     amppUserId?: string;
     amppCookieJar?: ReturnType<CookieJar['toJSON']>;
     amppAccessToken?: string;
+    amppAccessTokens?: Record<string, AmppAccessToken>;
+    amppTokenGeneration?: string;
     amppMatrixAccess?: AmppMatrixAccess;
     amppDashboardMatrixAccess?: AmppDashboardMatrixAccess;
     amppNotificationMailboxIds?: string[];

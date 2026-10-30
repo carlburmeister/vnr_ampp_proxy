@@ -264,7 +264,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
       this.platformUrl.protocol === 'https:' ? 'wss:' : 'ws:';
 
     const sessionToken = request.session
-      ? this.bearerToken.getSessionToken(request.session)
+      ? this.bearerToken.getSessionToken(request.session, 'POST', upstreamPath)
       : undefined;
     const token = sessionToken ?? (await this.bearerToken.getToken());
     upstreamUrl.searchParams.delete('access_token');
@@ -367,7 +367,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
       response.resume();
 
       if (response.statusCode === 401 && request.session && sessionToken) {
-        this.bearerToken.clearSessionToken(request.session);
+        this.bearerToken.clearSessionToken(request.session, sessionToken);
       } else if (response.statusCode === 401) {
         this.bearerToken.invalidate();
       }
