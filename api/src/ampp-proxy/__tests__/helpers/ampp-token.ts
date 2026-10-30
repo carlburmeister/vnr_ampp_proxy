@@ -1,3 +1,5 @@
+import type { SessionData } from 'express-session';
+
 export function amppToken(
   clientId: string,
   scope: unknown = ['platform', 'cluster'],
@@ -16,5 +18,13 @@ export function amppToken(
       }),
     ).toString('base64url') +
     '.test-signature'
+  );
+}
+export function cachedAmppToken(
+  session: Partial<SessionData>,
+  clientId: string,
+) {
+  return Object.values(session.amppAccessTokens ?? {}).find(
+    (entry) => entry.clientId === clientId,
   );
 }

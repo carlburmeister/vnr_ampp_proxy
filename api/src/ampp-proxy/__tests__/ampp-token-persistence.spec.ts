@@ -1,11 +1,13 @@
 import type { Request } from 'express';
 import type { SessionData } from 'express-session';
+import { ConfigService } from '@nestjs/config';
+import { AmppBearerTokenService } from '../ampp-bearer-token.service';
 import { AmppProxySessionService } from '../ampp-proxy-session.service';
 import {
   clearAmppAccessTokens,
   storeAmppAccessToken,
 } from '../ampp-access-tokens';
-import { amppToken } from './helpers/ampp-token';
+import { amppToken, cachedAmppToken } from './helpers/ampp-token';
 
 describe('Concurrent AMPP token persistence', () => {
   const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -46,10 +48,11 @@ describe('Concurrent AMPP token persistence', () => {
     storeAmppAccessToken(a.req.session, amppToken('wrapper'));
     storeAmppAccessToken(b.req.session, amppToken('gvui', ['platform']));
     await Promise.all([a.save(), b.save()]);
-    expect(Object.keys(state.stored().amppAccessTokens).sort()).toEqual([
-      'gvui',
-      'wrapper',
-    ]);
+    expect(
+      Object.values(state.stored().amppAccessTokens)
+        .map((entry) => entry.clientId)
+        .sort(),
+    ).toEqual(['gvui', 'wrapper']);
   });
 
   it.each([true, false])(
@@ -67,7 +70,7 @@ describe('Concurrent AMPP token persistence', () => {
       storeAmppAccessToken(newer.req.session, token);
       for (const request of newerFirst ? [newer, older] : [older, newer])
         await request.save();
-      expect(state.stored().amppAccessTokens.wrapper.token).toBe(token);
+      expect(cachedAmppToken(state.stored(), 'wrapper').token).toBe(token);
     },
   );
 
@@ -77,14 +80,16 @@ describe('Concurrent AMPP token persistence', () => {
     const state = setup(initial),
       rejected = state.start(),
       renewed = state.start();
-    delete rejected.req.session.amppAccessTokens.wrapper;
+    delete rejected.req.session.amppAccessTokens[
+      Object.keys(rejected.req.session.amppAccessTokens)[0]
+    ];
     const replacement = amppToken('wrapper', ['platform', 'cluster'], {
       iat: Math.floor(Date.now() / 1000) + 1,
     });
     storeAmppAccessToken(renewed.req.session, replacement);
     await renewed.save();
     await rejected.save();
-    expect(state.stored().amppAccessTokens.wrapper.token).toBe(replacement);
+    expect(cachedAmppToken(state.stored(), 'wrapper').token).toBe(replacement);
   });
 
   it('removes only a rejected client while preserving a concurrent independent renewal', async () => {
@@ -93,11 +98,17 @@ describe('Concurrent AMPP token persistence', () => {
     const state = setup(initial),
       rejected = state.start(),
       renewed = state.start();
-    delete rejected.req.session.amppAccessTokens.wrapper;
+    delete rejected.req.session.amppAccessTokens[
+      Object.keys(rejected.req.session.amppAccessTokens)[0]
+    ];
     storeAmppAccessToken(renewed.req.session, amppToken('gvui', ['platform']));
     await renewed.save();
     await rejected.save();
-    expect(Object.keys(state.stored().amppAccessTokens)).toEqual(['gvui']);
+    expect(
+      Object.values(state.stored().amppAccessTokens).map(
+        (entry) => entry.clientId,
+      ),
+    ).toEqual(['gvui']);
   });
 
   it.each([true, false])(
@@ -113,9 +124,11 @@ describe('Concurrent AMPP token persistence', () => {
       storeAmppAccessToken(reset.req.session, amppToken('new-client'));
       for (const request of resetFirst ? [reset, stale] : [stale, reset])
         await request.save();
-      expect(Object.keys(state.stored().amppAccessTokens)).toEqual([
-        'new-client',
-      ]);
+      expect(
+        Object.values(state.stored().amppAccessTokens).map(
+          (entry) => entry.clientId,
+        ),
+      ).toEqual(['new-client']);
       expect(state.stored().amppTokenGeneration).toBe(
         reset.req.session.amppTokenGeneration,
       );
@@ -171,5 +184,95 @@ describe('Concurrent AMPP token persistence', () => {
     await stale.save();
     expect(state.stored().amppCookieJar).toEqual({ cookies: [{ key: 'new' }] });
     expect(state.stored().amppUserId).toBeUndefined();
+  });
+
+  it.each([true, false])(
+    'preserves concurrent scope variants for the same client when wrapper saves first: %s',
+    async (wrapperFirst) => {
+      const state = setup();
+      const wrapper = state.start(),
+        dashboard = state.start();
+      const a = amppToken('shared-client');
+      const b = amppToken('shared-client', [
+        'cluster',
+        'platform',
+        'playout.orchestration',
+      ]);
+      storeAmppAccessToken(wrapper.req.session, a);
+      storeAmppAccessToken(dashboard.req.session, b);
+      for (const request of wrapperFirst
+        ? [wrapper, dashboard]
+        : [dashboard, wrapper])
+        await request.save();
+      expect(
+        Object.values(state.stored().amppAccessTokens).map(
+          (entry) => entry.token,
+        ),
+      ).toEqual(expect.arrayContaining([a, b]));
+    },
+  );
+
+  it.each(['single', 'client-cache'])(
+    'does not restore a rejected %s token after a concurrent migration',
+    async (format) => {
+      const token = amppToken('wrapper');
+      const now = Date.now();
+      const initial =
+        format === 'single'
+          ? { amppAccessToken: token }
+          : {
+              amppAccessTokens: {
+                wrapper: {
+                  token,
+                  scopes: ['platform', 'cluster'],
+                  expiresAt: now + 14400000,
+                  issuedAt: now,
+                },
+              },
+            };
+      const state = setup(initial as Partial<SessionData>),
+        rejected = state.start(),
+        migrated = state.start();
+      const selector = new AmppBearerTokenService(new ConfigService());
+      const selected = selector.getSessionToken(
+        rejected.req.session,
+        'GET',
+        '/mocha/application/id/api/v1/app/state',
+      );
+      expect(selected).toBe(token);
+      selector.clearSessionToken(rejected.req.session, selected);
+      selector.getSessionToken(
+        migrated.req.session,
+        'GET',
+        '/identity/api/v1/user',
+      );
+      await migrated.save();
+      await rejected.save();
+      expect(Object.values(state.stored().amppAccessTokens)).toHaveLength(0);
+    },
+  );
+
+  it('invalidates one scope variant without removing a concurrent variant for the same client', async () => {
+    const initial = {} as SessionData;
+    storeAmppAccessToken(initial, amppToken('shared-client'));
+    const state = setup(initial),
+      rejected = state.start(),
+      renewed = state.start();
+    delete rejected.req.session.amppAccessTokens[
+      Object.keys(rejected.req.session.amppAccessTokens)[0]
+    ];
+    const token = amppToken('shared-client', [
+      'platform',
+      'cluster',
+      'playout.orchestration',
+    ]);
+    storeAmppAccessToken(renewed.req.session, token);
+    await renewed.save();
+    await rejected.save();
+    expect(
+      Object.values(state.stored().amppAccessTokens).map(
+        (entry) => entry.token,
+      ),
+    ).toEqual([token]);
   });
 });

@@ -482,6 +482,7 @@ describe('AuthService', () => {
     session.amppAccessToken = 'legacy';
     session.amppAccessTokens = {
       wrapper: {
+        clientId: 'wrapper',
         token: 'cached',
         scopes: ['platform'],
         issuedAt: 0,

@@ -7,7 +7,10 @@ import type {
   AmppDashboardMatrixAccess,
   AmppMatrixAccess,
 } from '../auth/types/session-data';
-import { newerAmppAccessToken } from './ampp-access-tokens';
+import {
+  migrateAmppAccessToken,
+  newerAmppAccessToken,
+} from './ampp-access-tokens';
 
 const SESSION_KEYS = [
   'amppUserId',
@@ -105,11 +108,14 @@ export class AmppProxySessionService {
         } else if (current.amppTokenGeneration !== beforeGeneration) {
           req.session.amppAccessTokens = this.clone(current.amppAccessTokens);
           req.session.amppAccessToken = current.amppAccessToken;
-        } else if (changedKeys.includes('amppAccessTokens')) {
+        } else if (
+          changedKeys.includes('amppAccessTokens') ||
+          changedKeys.includes('amppAccessToken')
+        ) {
           req.session.amppAccessTokens = this.mergeAccessTokens(
-            snapshot.values.amppAccessTokens,
-            current.amppAccessTokens,
-            latest.amppAccessTokens,
+            snapshot.values,
+            current,
+            latest,
           );
         }
 
@@ -166,25 +172,36 @@ export class AmppProxySessionService {
   }
 
   private mergeAccessTokens(
-    before: Record<string, AmppAccessToken> = {},
-    after: Record<string, AmppAccessToken> = {},
-    latest: Record<string, AmppAccessToken> = {},
+    beforeValues: SessionValues,
+    afterValues: SessionValues,
+    latestValues: SessionValues,
   ): Record<string, AmppAccessToken> {
-    const merged = this.clone(latest);
-    for (const clientId of new Set([
+    // Normalize snapshots too: a concurrent migration must not resurrect a
+    // legacy token that this request has just invalidated.
+    const normalized = (values: SessionValues) => {
+      const state = {
+        amppAccessTokens: this.clone(values.amppAccessTokens),
+        amppAccessToken: values.amppAccessToken,
+      } as SessionData;
+      migrateAmppAccessToken(state);
+      return state.amppAccessTokens ?? {};
+    };
+    const before = normalized(beforeValues);
+    const after = normalized(afterValues);
+    const merged = normalized(latestValues);
+    for (const key of new Set([
       ...Object.keys(before),
       ...Object.keys(after),
     ])) {
-      if (this.same(before[clientId], after[clientId])) continue;
-      if (!after[clientId]) {
+      if (this.same(before[key], after[key])) continue;
+      if (!after[key]) {
         // A rejected/expired token must not remove a concurrent replacement.
-        if (this.same(before[clientId], merged[clientId]))
-          delete merged[clientId];
+        if (this.same(before[key], merged[key])) delete merged[key];
       } else if (
-        !merged[clientId] ||
-        newerAmppAccessToken(after[clientId], merged[clientId])
+        !merged[key] ||
+        newerAmppAccessToken(after[key], merged[key])
       ) {
-        merged[clientId] = this.clone(after[clientId]);
+        merged[key] = this.clone(after[key]);
       }
     }
     return merged;

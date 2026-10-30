@@ -23,17 +23,25 @@ export class AmppBearerTokenService {
     const path = new URL(upstreamPath, 'http://ampp-proxy.local').pathname;
     // AMPP Store is a platform API despite its /cluster/store prefix.
     const scope =
-      /^\/cluster\/(?:state|control|matrix|fabric|snapshot)\/api(?:\/|$)/i.test(
+      /^\/(?:cluster\/(?:state|control|matrix|fabric|snapshot)\/api|mocha\/application\/[^/]+\/api)(?:\/|$)/i.test(
         path,
       )
         ? 'cluster'
-        : 'platform';
+        : path === '/' ||
+            /^\/(?:(?:identity|configuration|discovery|logging|notifications|hubmanager|ampp\/control)\/api(?:\/|$)|cluster\/store\/api(?:\/|$)|api\/v1\/store(?:\/|$)|pushnotificationshub(?:\/|$))/i.test(
+              path,
+            )
+          ? 'platform'
+          : undefined;
     const readOnly = ['GET', 'HEAD'].includes(method.toUpperCase());
     const tokens = session.amppAccessTokens ?? {};
-    for (const [clientId, entry] of Object.entries(tokens)) {
+    for (const [key, entry] of Object.entries(tokens)) {
       if (entry.expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS)
-        delete tokens[clientId];
+        delete tokens[key];
     }
+    // The policy still authorizes the request; unknown API families use the
+    // existing server authentication fallback rather than assuming a scope.
+    if (!scope) return undefined;
     return Object.values(tokens)
       .filter(
         (entry) =>
@@ -50,10 +58,8 @@ export class AmppBearerTokenService {
 
   clearSessionToken(session: SessionData, token: string): void {
     migrateAmppAccessToken(session);
-    for (const [clientId, entry] of Object.entries(
-      session.amppAccessTokens ?? {},
-    )) {
-      if (entry.token === token) delete session.amppAccessTokens[clientId];
+    for (const [key, entry] of Object.entries(session.amppAccessTokens ?? {})) {
+      if (entry.token === token) delete session.amppAccessTokens[key];
     }
   }
 

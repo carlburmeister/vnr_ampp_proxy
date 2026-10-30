@@ -3,7 +3,7 @@ import type { SessionData } from 'express-session';
 import { AmppBearerTokenService } from '../ampp-bearer-token.service';
 import { AmppWebSocketProxyService } from '../ampp-websocket-proxy.service';
 import { storeAmppAccessToken } from '../ampp-access-tokens';
-import { amppToken } from './helpers/ampp-token';
+import { amppToken, cachedAmppToken } from './helpers/ampp-token';
 
 jest.mock('ws', () =>
   Object.assign(jest.fn(), {
@@ -96,8 +96,8 @@ describe('Notification WebSocket bearer selection', () => {
       statusCode: 401,
       resume: () => {},
     });
-    expect(session.amppAccessTokens.gvui).toBeUndefined();
-    expect(session.amppAccessTokens.wrapper.token).toBe(wrapper);
+    expect(cachedAmppToken(session, 'gvui')).toBeUndefined();
+    expect(cachedAmppToken(session, 'wrapper').token).toBe(wrapper);
   });
 
   it('uses the existing fallback instead of a read-only notification token', async () => {

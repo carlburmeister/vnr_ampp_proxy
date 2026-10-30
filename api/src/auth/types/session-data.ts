@@ -8,6 +8,7 @@ import type { CookieJar } from 'tough-cookie';
 import type { AuthenticatedUser } from '../auth.service';
 
 export type AmppAccessToken = {
+  clientId: string;
   token: string;
   scopes: string[];
   expiresAt: number;

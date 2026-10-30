@@ -5,7 +5,7 @@ import {
   clearAmppAccessTokens,
   storeAmppAccessToken,
 } from '../ampp-access-tokens';
-import { amppToken } from './helpers/ampp-token';
+import { amppToken, cachedAmppToken } from './helpers/ampp-token';
 
 describe('AMPP session bearer selection', () => {
   let service: AmppBearerTokenService;
@@ -142,7 +142,9 @@ describe('AMPP session bearer selection', () => {
     const token = amppToken('wrapper');
     storeAmppAccessToken(session, token, 'wrapper');
     storeAmppAccessToken(session, amppToken('gvui'), 'wrapper');
-    expect(Object.keys(session.amppAccessTokens)).toEqual(['wrapper']);
+    expect(
+      Object.values(session.amppAccessTokens).map((entry) => entry.clientId),
+    ).toEqual(['wrapper']);
   });
 
   it('invalidates only the rejected token, preserving replacements and other clients', () => {
@@ -157,7 +159,7 @@ describe('AMPP session bearer selection', () => {
     });
     storeAmppAccessToken(session, replacement);
     service.clearSessionToken(session, token);
-    expect(session.amppAccessTokens.wrapper.token).toBe(replacement);
+    expect(cachedAmppToken(session, 'wrapper').token).toBe(replacement);
   });
 
   it('clears all cached and legacy tokens when authentication resets', () => {
@@ -170,5 +172,129 @@ describe('AMPP session bearer selection', () => {
     const generation = session.amppTokenGeneration;
     clearAmppAccessTokens(session);
     expect(session.amppTokenGeneration).not.toBe(generation);
+  });
+
+  it.each([true, false])(
+    'retains dashboard scope variants when the wrapper renews last: %s',
+    (wrapperLast) => {
+      const now = Math.floor(Date.now() / 1000);
+      const dashboard = amppToken(
+        'shared-client',
+        ['cluster', 'platform', 'openid', 'playout.orchestration'],
+        { iat: now - (wrapperLast ? 1 : 0) },
+      );
+      const wrapper = amppToken(
+        'shared-client',
+        ['cluster', 'platform', 'openid'],
+        { iat: now - (wrapperLast ? 0 : 1) },
+      );
+      for (const token of wrapperLast
+        ? [dashboard, wrapper]
+        : [wrapper, dashboard])
+        storeAmppAccessToken(session, token);
+      expect(
+        Object.values(session.amppAccessTokens).map((entry) => entry.token),
+      ).toEqual(expect.arrayContaining([dashboard, wrapper]));
+      expect(Object.keys(session.amppAccessTokens)).toHaveLength(2);
+    },
+  );
+
+  it.each([
+    '/identity/api/v1/user',
+    '/configuration/api/v1/configuration/key',
+    '/discovery/api/v1/services?instance=id',
+    '/logging/api/v2/events',
+    '/notifications/api/v1/mailbox',
+    '/pushnotificationshub',
+    '/cluster/store/api/store/messagescache',
+    '/api/v1/store/still/stills/logo.png',
+    '/hubmanager/api/v1/sites',
+    '/ampp/control/api/v1/macro',
+  ])('keeps platform scope for the supported API family %s', (path) => {
+    const token = amppToken('gvui', ['platform']);
+    storeAmppAccessToken(session, token);
+    expect(service.getSessionToken(session, 'GET', path)).toBe(token);
+  });
+
+  it('uses no session token for an unclassified API family', () => {
+    storeAmppAccessToken(session, amppToken('wrapper'));
+    expect(
+      service.getSessionToken(session, 'GET', '/unclassified/api/v1/items'),
+    ).toBeUndefined();
+  });
+
+  it('treats duplicate or reordered scope sets as the same token variant', () => {
+    const now = Math.floor(Date.now() / 1000);
+    storeAmppAccessToken(
+      session,
+      amppToken('wrapper', ['cluster', 'platform', 'platform'], {
+        iat: now - 1,
+      }),
+    );
+    const replacement = amppToken('wrapper', 'platform cluster', { iat: now });
+    storeAmppAccessToken(session, replacement);
+    expect(Object.values(session.amppAccessTokens)).toHaveLength(1);
+    expect(cachedAmppToken(session, 'wrapper').token).toBe(replacement);
+    expect(cachedAmppToken(session, 'wrapper').scopes).toEqual([
+      'cluster',
+      'platform',
+    ]);
+  });
+
+  it('accepts read-only cluster tokens for application reads and full cluster tokens for writes', () => {
+    const readOnly = amppToken('wrapper', [
+      'cluster.readonly',
+      'platform.readonly',
+    ]);
+    const full = amppToken('wrapper');
+    storeAmppAccessToken(session, readOnly);
+    const path = '/mocha/application/id/api/v1/app/state';
+    expect(service.getSessionToken(session, 'GET', path)).toBe(readOnly);
+    expect(service.getSessionToken(session, 'POST', path)).toBeUndefined();
+    storeAmppAccessToken(session, full);
+    expect(service.getSessionToken(session, 'POST', path)).toBe(full);
+    service.clearSessionToken(session, full);
+    expect(service.getSessionToken(session, 'GET', path)).toBe(readOnly);
+  });
+
+  it('migrates the deployed client-only cache and retains its token with new variants', () => {
+    const token = amppToken('wrapper');
+    const now = Date.now();
+    Object.assign(session, {
+      amppAccessTokens: {
+        wrapper: {
+          token,
+          scopes: ['platform', 'cluster'],
+          expiresAt: now + 14400000,
+          issuedAt: now,
+        },
+      },
+    });
+    expect(
+      service.getSessionToken(
+        session,
+        'GET',
+        '/mocha/application/id/api/v1/app/state',
+      ),
+    ).toBe(token);
+    expect(cachedAmppToken(session, 'wrapper').clientId).toBe('wrapper');
+    storeAmppAccessToken(session, amppToken('wrapper', ['platform']));
+    expect(Object.values(session.amppAccessTokens)).toHaveLength(2);
+  });
+
+  it('expires one scope variant without removing another usable variant', () => {
+    const now = Math.floor(Date.now() / 1000);
+    storeAmppAccessToken(
+      session,
+      amppToken('shared-client', ['platform'], { exp: now - 1 }),
+    );
+    const token = amppToken('shared-client');
+    storeAmppAccessToken(session, token);
+    expect(
+      service.getSessionToken(session, 'GET', '/identity/api/v1/user'),
+    ).toBe(token);
+    expect(
+      Object.values(session.amppAccessTokens).map((entry) => entry.token),
+    ).toEqual([token]);
   });
 });

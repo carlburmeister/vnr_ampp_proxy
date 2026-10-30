@@ -5,7 +5,8 @@ import type { AmppCookieHttpService } from '../ampp-cookie-http.service';
 import { AmppBrowserSecurityService } from '../ampp-browser-security.service';
 import { AmppProxyService } from '../ampp-proxy.service';
 import { AmppResponseRewriterService } from '../ampp-response-rewriter.service';
-import { amppToken } from './helpers/ampp-token';
+import { amppToken, cachedAmppToken } from './helpers/ampp-token';
+import { applicationRequests } from './helpers/ampp-application-requests';
 
 const PLATFORM = 'https://ampp.invalid';
 const WORKLOADS = [
@@ -94,18 +95,90 @@ describe('AMPP bearer routing across OAuth renewals', () => {
       'https://proxy.invalid',
     );
   }
-  async function api(path = '/cluster/state/api/v1/workload/' + WORKLOADS[0]) {
+  async function api(
+    path = '/cluster/state/api/v1/workload/' + WORKLOADS[0],
+    method = 'GET',
+    workloadId = WORKLOADS[0],
+  ) {
     return proxy.proxyApiRequest(
       'sid',
       session,
-      WORKLOADS[0],
-      'GET',
+      workloadId,
+      method,
       path,
       {},
       undefined,
       'https://proxy.invalid',
     );
   }
+
+  describe.each([
+    ['wrapper', 'gvui'],
+    ['gvui', 'wrapper'],
+  ])('application initialization after %s then %s', (first, second) => {
+    it.each(applicationRequests)(
+      'authorizes $name in a standalone frame sharing the GVUI session',
+      async ({ path, workloadId }) => {
+        const tokens: Record<string, string> = {
+          wrapper: wrapper(),
+          gvui: gvui(),
+        };
+        for (const client of [first, second])
+          await renew(client, tokens[client]);
+        // These captured application APIs require cluster access. An unsuitable
+        // bearer receives 403 instead of the old unconditional-success fixture.
+        request.mockImplementation((_jar, _path, options) => {
+          const token = options.headers.Authorization.slice('Bearer '.length);
+          const claims = JSON.parse(
+            Buffer.from(token.split('.')[1], 'base64url').toString(),
+          ) as { scope: string[] };
+          return Promise.resolve(
+            response(claims.scope.includes('cluster') ? 200 : 403),
+          );
+        });
+        expect((await api(path, 'GET', workloadId)).status).toBe(200);
+        expect(request.mock.lastCall[2].headers.Authorization).toBe(
+          'Bearer ' + tokens.wrapper,
+        );
+        expect(fallback).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it('keeps application access across ten hours of interleaved wrapper and GVUI renewals', async () => {
+    const start = Date.now();
+    const clock = jest.spyOn(Date, 'now');
+    try {
+      await renew('wrapper', wrapper());
+      await renew('gvui', gvui());
+      request.mockImplementation((_jar, path, options) => {
+        const token = options.headers.Authorization.slice('Bearer '.length);
+        const claims = JSON.parse(
+          Buffer.from(token.split('.')[1], 'base64url').toString(),
+        ) as { scope: string[] };
+        const expected = applicationRequests.some(
+          (request) => request.path === path,
+        )
+          ? 'cluster'
+          : 'platform';
+        return Promise.resolve(
+          response(claims.scope.includes(expected) ? 200 : 403),
+        );
+      });
+      for (let hour = 1; hour <= 10; hour++) {
+        clock.mockReturnValue(start + hour * 3600000);
+        if (hour % 3 === 0) await renew('wrapper', wrapper());
+        if (hour % 3 === 1) await renew('gvui', gvui());
+        for (const { path, workloadId } of applicationRequests) {
+          expect((await api(path, 'GET', workloadId)).status).toBe(200);
+        }
+        expect((await api('/identity/api/v1/user')).status).toBe(200);
+      }
+      expect(fallback).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
   it.each([
     ['wrapper', 'gvui'],
@@ -157,8 +230,8 @@ describe('AMPP bearer routing across OAuth renewals', () => {
     await renew('gvui', gvui());
     request.mockClear().mockResolvedValueOnce(response(401));
     expect((await api()).status).toBe(401);
-    expect(session.amppAccessTokens.wrapper).toBeUndefined();
-    expect(session.amppAccessTokens.gvui).toBeDefined();
+    expect(cachedAmppToken(session, 'wrapper')).toBeUndefined();
+    expect(cachedAmppToken(session, 'gvui')).toBeDefined();
     await api();
     expect(fallback).toHaveBeenCalledTimes(1);
   });

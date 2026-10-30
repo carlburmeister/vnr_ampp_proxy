@@ -16,9 +16,13 @@ import type { AmppCookieHttpService } from '../src/ampp-proxy/ampp-cookie-http.s
 import { AmppResponseRewriterService } from '../src/ampp-proxy/ampp-response-rewriter.service';
 import { storeAmppAccessToken } from '../src/ampp-proxy/ampp-access-tokens';
 import { amppToken } from '../src/ampp-proxy/__tests__/helpers/ampp-token';
+import { applicationRequests } from '../src/ampp-proxy/__tests__/helpers/ampp-application-requests';
 
 const ALLOWED = 'fbab1aa9-405b-460d-abfa-83a239981f5e';
 const DENIED = '19876769-99e5-4685-a7e2-95d8c0720284';
+const GRANTED = [
+  ...new Set(applicationRequests.map((request) => request.workloadId)),
+];
 
 // Real guard, policy, API controller, token selector and response rewriter.
 // No live AMPP, credentials or database are used.
@@ -36,23 +40,37 @@ describe('Scope-aware bearer selection with workload authorization (isolated HTT
       .mockResolvedValue(amppToken('api-key'));
     session = {
       user: { id: 'test-user' },
-      allowedWorkloads: [
-        {
-          id: ALLOWED,
-          name: 'SRT Input #1',
-          is_parent: 0,
-          pageType: 'ampp-ui',
-        },
-      ],
-      amppAllowedWorkloadIds: [ALLOWED],
+      allowedWorkloads: GRANTED.map((id) => ({
+        id,
+        name: id,
+        is_parent: 0,
+        pageType: 'ampp-ui',
+      })),
+      amppAllowedWorkloadIds: GRANTED,
     } as SessionData;
     storeAmppAccessToken(session, clusterToken);
     storeAmppAccessToken(session, amppToken('gvui', ['platform', 'openid']));
-    upstream = jest.fn().mockResolvedValue({
-      status: 200,
-      body: Buffer.from('{}'),
-      headers: { 'content-type': 'application/json' },
-      url: 'https://ampp.invalid/cluster/state/api/v1/workload/' + ALLOWED,
+    upstream = jest.fn();
+    upstream.mockImplementation((_jar, path, options) => {
+      const token = options.headers.Authorization.slice('Bearer '.length);
+      const claims = JSON.parse(
+        Buffer.from(token.split('.')[1], 'base64url').toString(),
+      ) as { scope: string[] };
+      const scope =
+        applicationRequests.some((request) => request.path === path) ||
+        path.startsWith('/cluster/state/api/')
+          ? 'cluster'
+          : 'platform';
+      const allowed =
+        claims.scope.includes(scope) ||
+        (options.method === 'GET' &&
+          claims.scope.includes(`${scope}.readonly`));
+      return Promise.resolve({
+        status: allowed ? 200 : 403,
+        body: Buffer.from('{}'),
+        headers: { 'content-type': 'application/json' },
+        url: 'https://ampp.invalid/cluster/state/api/v1/workload/' + ALLOWED,
+      });
     });
     const filter = {
       filterApiResponse: (_s: unknown, _w: string, _p: string, r: unknown) => r,
@@ -150,8 +168,35 @@ describe('Scope-aware bearer selection with workload authorization (isolated HTT
     expect(upstream).not.toHaveBeenCalled();
   });
   it('uses the existing fallback for an allowed cluster read when only a GVUI token remains', async () => {
-    delete session.amppAccessTokens.wrapper;
+    const key = Object.keys(session.amppAccessTokens).find(
+      (key) => session.amppAccessTokens[key].clientId === 'wrapper',
+    );
+    delete session.amppAccessTokens[key];
     await request(app.getHttpServer()).get(url()).expect(200);
     expect(fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(applicationRequests)(
+    'initializes $name through the policy and API controller',
+    async ({ path, workloadId }) => {
+      await request(app.getHttpServer())
+        .get(`/api/ampp-proxy/api/${workloadId}${path}`)
+        .expect(200);
+      expect(upstream.mock.lastCall[2].headers.Authorization).toBe(
+        'Bearer ' + clusterToken,
+      );
+      expect(fallback).not.toHaveBeenCalled();
+    },
+  );
+
+  it('blocks denied application state and health before token selection', async () => {
+    for (const endpoint of ['state', 'health']) {
+      await request(app.getHttpServer())
+        .get(
+          `/api/ampp-proxy/api/${ALLOWED}/mocha/application/${DENIED}/api/v1/app/${endpoint}`,
+        )
+        .expect(403);
+    }
+    expect(upstream).not.toHaveBeenCalled();
   });
 });

@@ -32,19 +32,21 @@ export function storeAmppAccessToken(
       return;
 
     const entry: AmppAccessToken = {
+      clientId,
       token,
-      scopes: scopes as string[],
+      scopes: [...new Set(scopes as string[])].sort(),
       expiresAt: claims.exp * 1000,
       issuedAt:
         typeof claims.iat === 'number' && Number.isFinite(claims.iat)
           ? claims.iat * 1000
           : 0,
     };
-    const previous = session.amppAccessTokens?.[clientId];
+    const key = JSON.stringify([clientId, entry.scopes]);
+    const previous = session.amppAccessTokens?.[key];
     if (!previous || newerAmppAccessToken(entry, previous)) {
       session.amppAccessTokens = {
         ...session.amppAccessTokens,
-        [clientId]: entry,
+        [key]: entry,
       };
     }
   } catch {
@@ -63,6 +65,17 @@ export function newerAmppAccessToken(
 }
 
 export function migrateAmppAccessToken(session: SessionData): void {
+  // Earlier builds keyed this cache only by client ID. Re-key existing entries
+  // from their server-captured token without losing other scope variants.
+  for (const [key, entry] of Object.entries(session.amppAccessTokens ?? {})) {
+    if (
+      entry.clientId &&
+      key === JSON.stringify([entry.clientId, entry.scopes])
+    )
+      continue;
+    delete session.amppAccessTokens[key];
+    storeAmppAccessToken(session, entry.token, entry.clientId);
+  }
   if (session.amppAccessToken)
     storeAmppAccessToken(session, session.amppAccessToken);
   delete session.amppAccessToken;
