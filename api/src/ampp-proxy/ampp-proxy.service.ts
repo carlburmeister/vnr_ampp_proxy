@@ -6,6 +6,10 @@ import type { IncomingHttpHeaders } from 'node:http';
 import type { CookieJar } from 'tough-cookie';
 
 import { AmppBearerTokenService } from './ampp-bearer-token.service';
+import {
+  migrateAmppAccessToken,
+  storeAmppAccessToken,
+} from './ampp-access-tokens';
 import { AmppBrowserSecurityService } from './ampp-browser-security.service';
 import {
   AmppCookieHttpService,
@@ -142,7 +146,11 @@ export class AmppProxyService {
       upstreamPath,
     );
     const prepared = this.gvui.prepareApiRequest(session, workloadId, method, upstreamPath, body);
-    const sessionToken = this.bearerToken.getSessionToken(session);
+    const sessionToken = this.bearerToken.getSessionToken(
+      session,
+      method,
+      prepared.path,
+    );
     let token = sessionToken ?? (await this.bearerToken.getToken());
     let response = await this.requestApiResource(
       cookieJar,
@@ -156,7 +164,7 @@ export class AmppProxyService {
     );
 
     if (response.status === 401 && sessionToken) {
-      this.bearerToken.clearSessionToken(session);
+      this.bearerToken.clearSessionToken(session, sessionToken);
     } else if (response.status === 401) {
       this.bearerToken.invalidate();
       token = await this.bearerToken.getToken();
@@ -315,7 +323,12 @@ export class AmppProxyService {
         return;
       }
 
-      session.amppAccessToken = accessToken;
+      migrateAmppAccessToken(session);
+      storeAmppAccessToken(
+        session,
+        accessToken,
+        requestUrl.searchParams.get('client_id') ?? '',
+      );
       amppProxySessionDebugLog(
         'Captured AMPP utility-user bearer token server-side',
         frontendSessionId,

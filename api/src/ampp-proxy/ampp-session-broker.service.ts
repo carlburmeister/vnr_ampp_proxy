@@ -7,6 +7,7 @@ import {
   amppProxySessionDebugWarn,
 } from './ampp-proxy-session-debug';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
+import { clearAmppAccessTokens } from './ampp-access-tokens';
 
 @Injectable()
 export class AmppSessionBrokerService {
@@ -60,7 +61,7 @@ export class AmppSessionBrokerService {
       frontendSessionId,
     );
     delete session.amppCookieJar;
-    delete session.amppAccessToken;
+    clearAmppAccessTokens(session);
     delete session.amppUserId;
     return this.getCookieJar(frontendSessionId, session, returnPath);
   }
