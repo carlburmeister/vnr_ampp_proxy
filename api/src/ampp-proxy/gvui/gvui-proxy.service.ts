@@ -292,11 +292,9 @@ export class GvuiProxyService {
   ): GvuiMailbox {
     this.contextWorkload(session, contextId);
     const entry = session.gvuiMailboxes?.[alias];
-    if (
-      !entry ||
-      entry.contextId !== contextId ||
-      Date.now() - entry.createdAt >= 1500000
-    ) {
+    // Ownership lasts for the authorized session. AMPP, not the alias creation
+    // time, determines whether the upstream mailbox has expired.
+    if (!entry || entry.contextId !== contextId) {
       throw new ForbiddenException(
         'GV.UI mailbox does not belong to this layout session',
       );
@@ -432,10 +430,7 @@ export class GvuiProxyService {
       throw new BadGatewayException('Invalid GV.UI mailbox response');
     const entries = (session.gvuiMailboxes ??= {});
     for (const [alias, entry] of Object.entries(entries)) {
-      if (
-        Date.now() - entry.createdAt >= 1500000 ||
-        !session.allowedGvuiLayoutIds?.includes(entry.contextId.slice(5))
-      )
+      if (!session.allowedGvuiLayoutIds?.includes(entry.contextId.slice(5)))
         delete entries[alias];
     }
     if (Object.keys(entries).length >= 512 && !entries[prepared.mailbox.alias])
