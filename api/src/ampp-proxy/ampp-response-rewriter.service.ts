@@ -4,7 +4,6 @@ import { ConfigService } from '@nestjs/config';
 import { createAmppRedirectStorageScript } from './ampp-redirect-storage';
 import type { AmppCookieHttpResponse } from './ampp-cookie-http.service';
 import { createAmppBrowserDiagnosticsScript } from './ampp-browser-diagnostics';
-import { createGvuiNotificationPollingScript } from './gvui/gvui-notification-polling';
 
 export type AmppBrowserResponse = {
   status: number;
@@ -663,11 +662,7 @@ a[href*="/cluster/store/announcements"],
       wsProxyPath: `/api/ampp-proxy/ws/${encodeURIComponent(workloadId)}`,
     };
 
-    const pollingScript = createGvuiNotificationPollingScript(
-      workloadId,
-      responsePath.pathname,
-    );
-    return pollingScript + `<script data-ampp-proxy-bootstrap>(function(){
+    return `<script data-ampp-proxy-bootstrap>(function(){
 const c=${JSON.stringify(values)};
 const proxyHttpBase=window.location.origin+c.httpProxyPath;
 const proxyApiBase=window.location.origin+c.apiProxyPath;

@@ -2,6 +2,8 @@ import {
   All,
   BadRequestException,
   Controller,
+  ConflictException,
+  HttpException,
   Param,
   Req,
   Res,
@@ -13,10 +15,15 @@ import { SessionAuthGuard } from '../auth/session-auth.guard';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
 import { AmppProxyService } from './ampp-proxy.service';
 import { AmppProxySessionService } from './ampp-proxy-session.service';
+import type { AmppBrowserResponse } from './ampp-response-rewriter.service';
+import { GvuiPollRetry } from './gvui/gvui-poll-retry';
+import { GVUI_MAILBOX_LIMIT, pruneGvuiMailboxes } from './gvui/gvui-mailboxes';
 
 @Controller('ampp-proxy')
 @UseGuards(SessionAuthGuard)
 export class AmppApiProxyController {
+  private readonly pollRetry = new GvuiPollRetry();
+
   constructor(
     private readonly policy: AmppProxyPolicyService,
     private readonly proxy: AmppProxyService,
@@ -29,29 +36,101 @@ export class AmppApiProxyController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    const sessionSnapshot = this.proxySession.snapshot(req.session);
+    let sessionSnapshot = this.proxySession.snapshot(req.session);
     const method = req.method.toUpperCase();
     const upstreamPath = this.getUpstreamPath(req, workloadId);
     const body = this.getRawBody(req);
-    const allowedPath = this.policy.assertApiAccess(
-      req.session,
+    const creation =
+      workloadId.startsWith('gvui-') &&
+      method === 'POST' &&
+      /^\/notifications\/api\/v1\/mailbox\/?$/i.test(upstreamPath);
+    let upstreamResponse: AmppBrowserResponse;
+    try {
+      const allowedPath = this.policy.assertApiAccess(
+        req.session,
+        workloadId,
+        method,
+        upstreamPath,
+        body,
+      );
+      if (creation) pruneGvuiMailboxes(req.session);
+      if (
+        creation ||
+        (workloadId.startsWith('gvui-') &&
+          /^\/notifications\/api\/v1\/(?:notifications|mailbox)\/[^/]+/i.test(
+            upstreamPath,
+          ))
+      ) {
+        // Persist throttled activity before a long poll, so another tab's cleanup
+        // sees this alias as active. Saving reloads current grants/ownership.
+        await this.proxySession.saveIfChanged(req, sessionSnapshot);
+        sessionSnapshot = this.proxySession.snapshot(req.session);
+        this.policy.assertApiAccess(
+          req.session,
+          workloadId,
+          method,
+          upstreamPath,
+          body,
+        );
+      }
+      if (creation) {
+        const data = JSON.parse(body.toString()) as { id: string };
+        if (
+          Object.keys(req.session.gvuiMailboxes ?? {}).length >=
+            GVUI_MAILBOX_LIMIT &&
+          !req.session.gvuiMailboxes?.[data.id]
+        )
+          throw new ConflictException('Too many open GV.UI mailboxes');
+      }
+      upstreamResponse = await this.proxy.proxyApiRequest(
+        req.sessionID,
+        req.session,
+        workloadId,
+        method,
+        allowedPath,
+        req.headers,
+        body,
+        this.getPublicOrigin(req),
+      );
+
+      await this.proxySession.saveIfChanged(req, sessionSnapshot);
+    } catch (error) {
+      await this.pollRetry.complete(
+        req.sessionID,
+        workloadId,
+        method,
+        upstreamPath,
+        error instanceof HttpException ? error.getStatus() : 500,
+        res,
+      );
+      if (res.destroyed) return;
+      throw error;
+    }
+
+    if (
+      creation &&
+      upstreamResponse.status >= 200 &&
+      upstreamResponse.status < 300
+    ) {
+      try {
+        const data = JSON.parse(upstreamResponse.body.toString()) as {
+          id?: unknown;
+        };
+        if (typeof data.id === 'string')
+          this.pollRetry.reset(req.sessionID, workloadId, data.id);
+      } catch {
+        // An invalid mailbox response is rejected by GvuiProxyService upstream.
+      }
+    }
+    await this.pollRetry.complete(
+      req.sessionID,
       workloadId,
       method,
       upstreamPath,
-      body,
+      upstreamResponse.status,
+      res,
     );
-    const upstreamResponse = await this.proxy.proxyApiRequest(
-      req.sessionID,
-      req.session,
-      workloadId,
-      method,
-      allowedPath,
-      req.headers,
-      body,
-      this.getPublicOrigin(req),
-    );
-
-    await this.proxySession.saveIfChanged(req, sessionSnapshot);
+    if (res.destroyed) return;
 
     res.status(upstreamResponse.status);
 

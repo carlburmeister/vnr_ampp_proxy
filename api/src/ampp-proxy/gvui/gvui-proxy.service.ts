@@ -11,6 +11,11 @@ import type { SessionData } from 'express-session';
 import { AmppControlService } from '../../ampp/services/ampp-control.service';
 import type { AmppCookieHttpResponse } from '../ampp-cookie-http.service';
 import {
+  GVUI_ACTIVITY_INTERVAL_MS,
+  GVUI_MAILBOX_LIMIT,
+  pruneGvuiMailboxes,
+} from './gvui-mailboxes';
+import {
   configuration,
   GVUI_CATALOG_PATH,
   object,
@@ -25,6 +30,7 @@ export type GvuiMailbox = {
   contextId: string;
   upstreamId: string;
   createdAt: number;
+  lastUsedAt?: number;
 };
 export type GvuiPreparedRequest = {
   path: string;
@@ -299,6 +305,12 @@ export class GvuiProxyService {
         'GV.UI mailbox does not belong to this layout session',
       );
     }
+    const now = Date.now();
+    if (
+      entry.lastUsedAt === undefined ||
+      now - entry.lastUsedAt >= GVUI_ACTIVITY_INTERVAL_MS
+    )
+      entry.lastUsedAt = now;
     return entry;
   }
 
@@ -429,16 +441,17 @@ export class GvuiProxyService {
     if (data?.id !== prepared.mailbox.upstreamId)
       throw new BadGatewayException('Invalid GV.UI mailbox response');
     const entries = (session.gvuiMailboxes ??= {});
-    for (const [alias, entry] of Object.entries(entries)) {
-      if (!session.allowedGvuiLayoutIds?.includes(entry.contextId.slice(5)))
-        delete entries[alias];
-    }
-    if (Object.keys(entries).length >= 512 && !entries[prepared.mailbox.alias])
+    pruneGvuiMailboxes(session);
+    if (
+      Object.keys(entries).length >= GVUI_MAILBOX_LIMIT &&
+      !entries[prepared.mailbox.alias]
+    )
       throw new ConflictException('Too many open GV.UI mailboxes');
     entries[prepared.mailbox.alias] = {
       contextId,
       upstreamId: prepared.mailbox.upstreamId,
       createdAt: Date.now(),
+      lastUsedAt: Date.now(),
     };
     return replaceJson(response, { ...data, id: prepared.mailbox.alias });
   }
