@@ -18,6 +18,8 @@ import { AmppProxySessionService } from './ampp-proxy-session.service';
 import type { AmppBrowserResponse } from './ampp-response-rewriter.service';
 import { GvuiPollRetry } from './gvui/gvui-poll-retry';
 import { GVUI_MAILBOX_LIMIT, pruneGvuiMailboxes } from './gvui/gvui-mailboxes';
+// TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
+import { tracePhase } from './diagnostics/ampp-proxy-trace';
 
 @Controller('ampp-proxy')
 @UseGuards(SessionAuthGuard)
@@ -46,12 +48,14 @@ export class AmppApiProxyController {
       /^\/notifications\/api\/v1\/mailbox\/?$/i.test(upstreamPath);
     let upstreamResponse: AmppBrowserResponse;
     try {
-      const allowedPath = this.policy.assertApiAccess(
-        req.session,
-        workloadId,
-        method,
-        upstreamPath,
-        body,
+      const allowedPath = tracePhase('policy', () =>
+        this.policy.assertApiAccess(
+          req.session,
+          workloadId,
+          method,
+          upstreamPath,
+          body,
+        ),
       );
       if (creation) pruneGvuiMailboxes(req.session);
       if (
@@ -63,14 +67,18 @@ export class AmppApiProxyController {
       ) {
         // Persist throttled activity before a long poll, so another tab's cleanup
         // sees this alias as active. Saving reloads current grants/ownership.
-        await this.proxySession.saveIfChanged(req, sessionSnapshot);
+        await tracePhase('session.merge', () =>
+          this.proxySession.saveIfChanged(req, sessionSnapshot),
+        );
         sessionSnapshot = this.proxySession.snapshot(req.session);
-        this.policy.assertApiAccess(
-          req.session,
-          workloadId,
-          method,
-          upstreamPath,
-          body,
+        tracePhase('policy.recheck', () =>
+          this.policy.assertApiAccess(
+            req.session,
+            workloadId,
+            method,
+            upstreamPath,
+            body,
+          ),
         );
       }
       if (creation) {
@@ -82,18 +90,22 @@ export class AmppApiProxyController {
         )
           throw new ConflictException('Too many open GV.UI mailboxes');
       }
-      upstreamResponse = await this.proxy.proxyApiRequest(
-        req.sessionID,
-        req.session,
-        workloadId,
-        method,
-        allowedPath,
-        req.headers,
-        body,
-        this.getPublicOrigin(req),
+      upstreamResponse = await tracePhase('proxy.api', () =>
+        this.proxy.proxyApiRequest(
+          req.sessionID,
+          req.session,
+          workloadId,
+          method,
+          allowedPath,
+          req.headers,
+          body,
+          this.getPublicOrigin(req),
+        ),
       );
 
-      await this.proxySession.saveIfChanged(req, sessionSnapshot);
+      await tracePhase('session.merge', () =>
+        this.proxySession.saveIfChanged(req, sessionSnapshot),
+      );
     } catch (error) {
       await this.pollRetry.complete(
         req.sessionID,

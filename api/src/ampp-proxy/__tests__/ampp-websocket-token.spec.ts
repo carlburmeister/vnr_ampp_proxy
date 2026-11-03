@@ -4,6 +4,8 @@ import { AmppBearerTokenService } from '../ampp-bearer-token.service';
 import { AmppWebSocketProxyService } from '../ampp-websocket-proxy.service';
 import { storeAmppAccessToken } from '../ampp-access-tokens';
 import { amppToken, cachedAmppToken } from './helpers/ampp-token';
+// TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
+import { traceUpgrade } from '../diagnostics/ampp-proxy-trace';
 
 jest.mock('ws', () =>
   Object.assign(jest.fn(), {
@@ -62,7 +64,10 @@ describe('Notification WebSocket bearer selection', () => {
     browserEvents.get('close')?.(1000, '');
     service.onModuleDestroy();
   });
-  async function connect() {
+  async function connect(
+    request: unknown = { session, headers: {} },
+    browser = peer(browserEvents),
+  ) {
     await (
       service as unknown as {
         connectUpstream: (
@@ -73,8 +78,8 @@ describe('Notification WebSocket bearer selection', () => {
         ) => Promise<void>;
       }
     ).connectUpstream(
-      peer(browserEvents),
-      { session, headers: {} },
+      browser,
+      request,
       'workload',
       '/pushnotificationshub',
     );
@@ -123,5 +128,48 @@ describe('Notification WebSocket bearer selection', () => {
     });
     expect(JSON.stringify(session.amppAccessTokens)).toBe(before);
     expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it('correlates upstream/browser closure while preserving peer close propagation', async () => {
+    const before = process.env.AMPP_PROXY_TRACE;
+    process.env.AMPP_PROXY_TRACE = 'true';
+    const lines: string[] = [];
+    const sink = jest
+      .spyOn(console, 'info')
+      .mockImplementation((line: string) => lines.push(line));
+    try {
+      storeAmppAccessToken(session, amppToken('wrapper'));
+      const req = {
+        session,
+        headers: {},
+        method: 'GET',
+        url: '/api/ampp-proxy/ws/workload/pushnotificationshub?access_token=TOKEN_SECRET',
+      };
+      const browser = Object.assign(peer(browserEvents), { readyState: 1 });
+      let connected: Promise<void>;
+      traceUpgrade(req as never, () => {
+        connected = connect(req, browser);
+      });
+      await connected;
+      upstreamEvents.get('close')(1000, 'PRIVATE_REASON');
+      expect(browser.close).toHaveBeenCalledWith(1000, 'PRIVATE_REASON');
+      browserEvents.get('close')(1000, 'PRIVATE_REASON');
+      const rows = lines.map(
+        (line) =>
+          JSON.parse(line.slice('[AMPP proxy trace] '.length)) as Record<
+            string,
+            unknown
+          >,
+      );
+      const closed = rows.filter((row) => row.event === 'websocket.close');
+      expect(closed.map((row) => row.side)).toEqual(['upstream', 'browser']);
+      expect(closed.every((row) => row.initiator === 'upstream')).toBe(true);
+      expect(new Set(rows.map((row) => row.traceId)).size).toBe(1);
+      expect(JSON.stringify(rows)).not.toMatch(/PRIVATE_REASON|TOKEN_SECRET/);
+    } finally {
+      sink.mockRestore();
+      if (before === undefined) delete process.env.AMPP_PROXY_TRACE;
+      else process.env.AMPP_PROXY_TRACE = before;
+    }
   });
 });

@@ -1,4 +1,6 @@
 import type { Response } from 'express';
+// TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
+import { tracePhase } from '../diagnostics/ampp-proxy-trace';
 
 type Failure = { count: number; touchedAt: number };
 
@@ -63,14 +65,19 @@ export class GvuiPollRetry {
       Math.round(1000 * 2 ** (count - 1) * (0.8 + Math.random() * 0.4)),
     );
     if (response.destroyed || response.writableEnded) return;
-    await new Promise<void>((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        response.off('close', done);
-        resolve();
-      };
-      const timer = setTimeout(done, delay);
-      response.once('close', done);
-    });
+    await tracePhase(
+      'poll.delay',
+      () =>
+        new Promise<void>((resolve) => {
+          const done = () => {
+            clearTimeout(timer);
+            response.off('close', done);
+            resolve();
+          };
+          const timer = setTimeout(done, delay);
+          response.once('close', done);
+        }),
+      { status, delayMs: delay },
+    );
   }
 }
