@@ -12,6 +12,11 @@ import { SESSION_MAX_AGE, sessionCookieSettings } from './auth/session-cookie';
 
 import { AppModule } from './app.module';
 import { AmppWebSocketProxyService } from './ampp-proxy/ampp-websocket-proxy.service';
+// TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
+import {
+  amppTraceMiddleware,
+  traceSessionStore,
+} from './ampp-proxy/diagnostics/ampp-proxy-trace';
 
 async function bootstrap() {
   
@@ -21,6 +26,9 @@ async function bootstrap() {
   const config = app.get(ConfigService);
 
   app.setGlobalPrefix('/api');
+
+  // TEMP AMPP trace: start before parsing/session access, including local failures.
+  app.use(amppTraceMiddleware);
 
   app.use(
     '/api/ampp-proxy/api',
@@ -57,6 +65,8 @@ async function bootstrap() {
     password: config.get<string>('MYSQL_PASSWORD'),
     database: config.get<string>('MYSQL_DATABASE'),
   });
+  // TEMP AMPP trace: observes callbacks; adds no database operations.
+  traceSessionStore(sessionStore);
 
   const sessionMiddleware = session({
     store: sessionStore,

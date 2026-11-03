@@ -9,6 +9,8 @@ import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { SessionExpiredError } from './mysql-session.store';
 import { clearSessionCookie } from './session-cookie';
+// TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
+import { tracePhase } from '../ampp-proxy/diagnostics/ampp-proxy-trace';
 
 export async function rejectExpiredSession(
   request: Request,
@@ -37,7 +39,11 @@ export class SessionAuthGuard implements CanActivate {
     private readonly config: ConfigService,
   ) {}
 
-  async canActivate(context: ExecutionContext): Promise<boolean> {
+  canActivate(context: ExecutionContext): Promise<boolean> {
+    return tracePhase('authorization', () => this.authorize(context));
+  }
+
+  private async authorize(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
     const response = context.switchToHttp().getResponse<Response>();
 
@@ -46,8 +52,8 @@ export class SessionAuthGuard implements CanActivate {
         throw new UnauthorizedException('Login required');
       }
 
-      const changed = await this.auth.refreshSessionAuthorization(
-        request.session,
+      const changed = await tracePhase('authorization.refresh', () =>
+        this.auth.refreshSessionAuthorization(request.session),
       );
       if (changed) {
         request.session.touch();

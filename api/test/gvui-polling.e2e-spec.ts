@@ -14,6 +14,11 @@ import { AmppProxyPolicyService } from '../src/ampp-proxy/ampp-proxy-policy.serv
 import { AmppProxyService } from '../src/ampp-proxy/ampp-proxy.service';
 import { AmppProxySessionService } from '../src/ampp-proxy/ampp-proxy-session.service';
 import { GvuiProxyService } from '../src/ampp-proxy/gvui/gvui-proxy.service';
+// TEMP AMPP trace: exercises the optional middleware through the existing real guard/controller.
+import {
+  amppTraceMiddleware,
+  traceSessionStore,
+} from '../src/ampp-proxy/diagnostics/ampp-proxy-trace';
 
 const LAYOUT = '11111111-1111-4111-8111-111111111111';
 const WORKLOAD = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -142,6 +147,7 @@ describe('GVUI polling lifecycle over HTTP', () => {
     }).compile();
     app = module.createNestApplication();
     app.setGlobalPrefix('api');
+    app.use(amppTraceMiddleware);
     app.use(raw({ type: () => true }));
     app.use((req: Request, res: Response, next: NextFunction) => {
       lastResponse = res;
@@ -168,6 +174,7 @@ describe('GVUI polling lifecycle over HTTP', () => {
           done(null, structuredClone(stored));
         },
       } as never;
+      traceSessionStore(req.sessionStore);
       next();
     });
     await app.init();
@@ -175,6 +182,80 @@ describe('GVUI polling lifecycle over HTTP', () => {
   afterEach(async () => {
     await app.close();
     jest.restoreAllMocks();
+  });
+
+  async function captureTrace(action: () => Promise<void>) {
+    const before = process.env.AMPP_PROXY_TRACE;
+    process.env.AMPP_PROXY_TRACE = 'true';
+    const output: string[] = [];
+    const sink = jest
+      .spyOn(console, 'info')
+      .mockImplementation((line: string) => output.push(line));
+    try {
+      await action();
+      return output.map(
+        (line) =>
+          JSON.parse(line.slice('[AMPP proxy trace] '.length)) as Record<
+            string,
+            unknown
+          >,
+      );
+    } finally {
+      sink.mockRestore();
+      if (before === undefined) delete process.env.AMPP_PROXY_TRACE;
+      else process.env.AMPP_PROXY_TRACE = before;
+    }
+  }
+
+  it('correlates real guard/policy/session/response stages without changing a successful poll', async () => {
+    const rows = await captureTrace(async () => {
+      await request(app.getHttpServer())
+        .get(POLL)
+        .expect(200)
+        .expect('x-ampp-trace-id', /^[0-9a-f-]{36}$/);
+    });
+    const events = rows.map((row) => row.event);
+    for (const event of [
+      'request.received',
+      'authorization.start',
+      'authorization.end',
+      'policy.start',
+      'policy.end',
+      'session.get.start',
+      'session.get.end',
+      'proxy.api.start',
+      'proxy.api.end',
+      'response.finish',
+    ])
+      expect(events).toContain(event);
+    expect(new Set(rows.map((row) => row.traceId)).size).toBe(1);
+    expect(rows.find((row) => row.event === 'response.finish').status).toBe(
+      200,
+    );
+    expect(JSON.stringify(rows)).not.toContain('session-one');
+  });
+
+  it('records a local 403 and its delayed response without an upstream request', async () => {
+    const rows = await captureTrace(async () => {
+      await request(app.getHttpServer())
+        .get(POLL.replace(ALIAS, 'unknown-mailbox'))
+        .expect(403);
+    });
+    expect(rows.find((row) => row.event === 'policy.error')).toMatchObject({
+      status: 403,
+    });
+    expect(rows.find((row) => row.event === 'poll.delay.start')).toMatchObject({
+      status: 403,
+      delayMs: expect.any(Number) as unknown,
+    });
+    expect(
+      rows.find((row) => row.event === 'poll.delay.end').durationMs,
+    ).toBeGreaterThanOrEqual(750);
+    expect(rows.find((row) => row.event === 'response.finish')).toMatchObject({
+      status: 403,
+    });
+    expect(rows.some((row) => row.event === 'proxy.api.start')).toBe(false);
+    expect(upstream).not.toHaveBeenCalled();
   });
 
   it('persists activity before the upstream poll and throttles subsequent activity writes', async () => {

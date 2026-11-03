@@ -24,6 +24,13 @@ import {
 import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
 import { GvuiProxyService } from './gvui/gvui-proxy.service';
+// TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
+import {
+  traceForRequest,
+  tracePhase,
+  traceSocketClose,
+  traceUpgrade,
+} from './diagnostics/ampp-proxy-trace';
 
 type WebSocketData = Buffer | ArrayBuffer | Buffer[] | string;
 
@@ -131,18 +138,21 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
       return;
     }
 
-    socket.on('error', () => undefined);
+    traceUpgrade(request, () => {
+      socket.on('error', () => undefined);
 
-    void this.authorizeUpgrade(request, parsedRequest)
-      .then((allowedPath) => {
-        this.browserServer.handleUpgrade(request, socket, head, (browser) => {
-          void this.connectUpstream(
-            browser,
-            request,
-            parsedRequest.workloadId,
-            allowedPath,
-          ).catch(
-            (error) => {
+      void tracePhase('authorization', () =>
+        this.authorizeUpgrade(request, parsedRequest),
+      )
+        .then((allowedPath) => {
+          this.browserServer.handleUpgrade(request, socket, head, (browser) => {
+            void this.connectUpstream(
+              browser,
+              request,
+              parsedRequest.workloadId,
+              allowedPath,
+            ).catch((error) => {
+              traceSocketClose(request, 'proxy', undefined, 'Setup failed');
               amppProxySessionDebugWarn(
                 `AMPP WebSocket setup failed path=${allowedPath}: ${
                   error instanceof Error ? error.message : 'unknown error'
@@ -150,18 +160,19 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
                 request.sessionID,
               );
               browser.terminate();
-            },
+            });
+          });
+        })
+        .catch((error) => {
+          const status =
+            error instanceof HttpException ? error.getStatus() : 500;
+          amppProxySessionDebugWarn(
+            `AMPP WebSocket upgrade rejected status=${status} path=${parsedRequest.upstreamPath}`,
+            request.sessionID,
           );
+          this.rejectUpgrade(socket, status);
         });
-      })
-      .catch((error) => {
-        const status = error instanceof HttpException ? error.getStatus() : 500;
-        amppProxySessionDebugWarn(
-          `AMPP WebSocket upgrade rejected status=${status} path=${parsedRequest.upstreamPath}`,
-          request.sessionID,
-        );
-        this.rejectUpgrade(socket, status);
-      });
+    });
   };
 
   private async authorizeUpgrade(
@@ -175,10 +186,12 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     }
 
     await this.auth.refreshSessionAuthorization(request.session);
-    return this.policy.assertWebSocketAccess(
-      request.session,
-      parsedRequest.workloadId,
-      parsedRequest.upstreamPath,
+    return tracePhase('policy', () =>
+      this.policy.assertWebSocketAccess(
+        request.session,
+        parsedRequest.workloadId,
+        parsedRequest.upstreamPath,
+      ),
     );
   }
 
@@ -192,11 +205,15 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     let pendingBytes = 0;
     let upstream: WebSocketConnection | undefined;
     let browserClosed = false;
+    // TEMP AMPP trace: share one callback across relays; never inspect payloads.
+    const traceRelayFailure = () =>
+      traceSocketClose(request, 'proxy', undefined, 'Relay failed');
     // Revalidate live sockets as permissions can change after the upgrade.
     const permissionCheck = setInterval(() => {
       void this.getStoredSession(request)
         .then(async (latest) => {
           if (!latest?.user) {
+            traceSocketClose(request, 'proxy', 1008, 'Session expired');
             browser.close(1008, 'Session expired');
             return;
           }
@@ -208,11 +225,15 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
             upstreamPath,
           );
         })
-        .catch(() => browser.close(1008, 'Permission revoked'));
+        .catch(() => {
+          traceSocketClose(request, 'proxy', 1008, 'Permission revoked');
+          browser.close(1008, 'Permission revoked');
+        });
     }, 10000);
     permissionCheck.unref();
 
     browser.on('close', (code: number, reason: unknown) => {
+      traceSocketClose(request, 'browser', code, reason);
       clearInterval(permissionCheck);
       browserClosed = true;
 
@@ -222,6 +243,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     });
 
     browser.on('error', () => {
+      traceSocketClose(request, 'browser', undefined, 'Transport error');
       clearInterval(permissionCheck);
       browserClosed = true;
       upstream?.terminate();
@@ -234,12 +256,21 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
           // Existing workload subscriptions are outbound requests, not Matrix
           // update payloads. Apply only GV.UI subscription authorization here.
           (strings) => this.gvui!.isHubMessageAllowed(request.session!, workloadId, strings, true), false);
-        if (filtered === undefined) { browser.close(1008, 'Notification subscription is not permitted'); return; }
+        if (filtered === undefined) {
+          traceSocketClose(
+            request,
+            'proxy',
+            1008,
+            'Notification subscription is not permitted',
+          );
+          browser.close(1008, 'Notification subscription is not permitted');
+          return;
+        }
         data = filtered;
       }
 
       if (upstream?.readyState === WebSocket.OPEN) {
-        this.relay(browser, upstream, data, isBinary);
+        this.relay(browser, upstream, data, isBinary, traceRelayFailure);
         return;
       }
 
@@ -251,6 +282,12 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
       pendingBytes += size;
 
       if (pendingBytes > MAX_PENDING_BYTES) {
+        traceSocketClose(
+          request,
+          'proxy',
+          1009,
+          'WebSocket message queue exceeded',
+        );
         browser.close(1009, 'WebSocket message queue exceeded');
         upstream?.terminate();
         return;
@@ -259,6 +296,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
       pendingMessages.push({ data, isBinary, size });
     });
 
+    traceForRequest(request, 'websocket.connect.start');
     const upstreamUrl = new URL(upstreamPath, this.platformUrl);
     upstreamUrl.protocol =
       this.platformUrl.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -313,6 +351,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     );
 
     upstream.on('open', () => {
+      traceForRequest(request, 'websocket.connect.end');
       amppProxySessionDebugLog(
         `AMPP WebSocket connected path=${upstreamPath}`,
         request.sessionID,
@@ -320,7 +359,13 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
 
       for (const message of pendingMessages.splice(0)) {
         pendingBytes -= message.size;
-        this.relay(browser, upstream, message.data, message.isBinary);
+        this.relay(
+          browser,
+          upstream,
+          message.data,
+          message.isBinary,
+          traceRelayFailure,
+        );
       }
     });
 
@@ -344,10 +389,11 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
         return;
       }
 
-      this.relay(upstream, browser, filteredData, isBinary);
+      this.relay(upstream, browser, filteredData, isBinary, traceRelayFailure);
     });
 
     upstream.on('close', (code: number, reason: unknown) => {
+      traceSocketClose(request, 'upstream', code, reason);
       amppProxySessionDebugLog(
         `AMPP WebSocket closed code=${code} path=${upstreamPath}`,
         request.sessionID,
@@ -356,6 +402,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     });
 
     upstream.on('error', (error: Error) => {
+      traceSocketClose(request, 'upstream', undefined, 'Transport error');
       amppProxySessionDebugWarn(
         `AMPP WebSocket error path=${upstreamPath}: ${error.message}`,
         request.sessionID,
@@ -363,8 +410,14 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
       browser.terminate();
     });
 
-    upstream.on('unexpected-response', (_upgradeRequest, response) => {
-      response.resume();
+    upstream.on(
+      'unexpected-response',
+      (_upgradeRequest: IncomingMessage, response: IncomingMessage) => {
+        traceForRequest(request, 'websocket.connect.rejected', {
+          status: response.statusCode,
+        });
+        traceSocketClose(request, 'proxy', 1011, 'AMPP WebSocket rejected');
+        response.resume();
 
       if (response.statusCode === 401 && request.session && sessionToken) {
         this.bearerToken.clearSessionToken(request.session, sessionToken);
@@ -385,12 +438,14 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     target: WebSocketConnection,
     data: WebSocketData,
     isBinary: boolean,
+    traceFailure?: () => void,
   ): void {
     if (target.readyState !== WebSocket.OPEN) {
       return;
     }
 
     if (target.bufferedAmount >= MAX_BUFFERED_BYTES) {
+      traceFailure?.();
       source.terminate();
       target.terminate();
       return;
@@ -399,11 +454,13 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     try {
       target.send(data, { binary: isBinary }, (error) => {
         if (error) {
+          traceFailure?.();
           source.terminate();
           target.terminate();
         }
       });
     } catch {
+      traceFailure?.();
       source.terminate();
       target.terminate();
     }

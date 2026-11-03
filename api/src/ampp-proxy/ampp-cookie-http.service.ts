@@ -4,6 +4,8 @@ import axios, { type Method } from 'axios';
 import { CookieJar } from 'tough-cookie';
 
 import { amppProxySessionDebugLog } from './ampp-proxy-session-debug';
+// TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
+import { tracePath, tracePhase } from './diagnostics/ampp-proxy-trace';
 
 export type AmppCookieHttpResponse = {
   status: number;
@@ -45,18 +47,23 @@ export class AmppCookieHttpService {
 
       const startedAt = Date.now();
       try {
-        const response = await axios.request<ArrayBuffer>({
-          url: url.toString(),
-          method,
-          data,
-          headers: {
-            ...headers,
-            ...(cookie ? { Cookie: cookie } : {}),
-          },
-          maxRedirects: 0,
-          responseType: 'arraybuffer',
-          validateStatus: () => true,
-        });
+        const response = await tracePhase(
+          'ampp.http',
+          () =>
+            axios.request<ArrayBuffer>({
+              url: url.toString(),
+              method,
+              data,
+              headers: {
+                ...headers,
+                ...(cookie ? { Cookie: cookie } : {}),
+              },
+              maxRedirects: 0,
+              responseType: 'arraybuffer',
+              validateStatus: () => true,
+            }),
+          { upstreamMethod: method, upstreamPath: tracePath(url.pathname) },
+        );
 
         if (response.status >= 500) {
           // Log only the path: OAuth query parameters can contain credentials.

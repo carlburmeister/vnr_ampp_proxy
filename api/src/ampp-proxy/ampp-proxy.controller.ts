@@ -16,6 +16,8 @@ import { AmppResponseRewriterService } from './ampp-response-rewriter.service';
 import { AmppProxyService } from './ampp-proxy.service';
 import { AmppProxySessionService } from './ampp-proxy-session.service';
 import { GvuiProxyService } from './gvui/gvui-proxy.service';
+// TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
+import { tracePhase } from './diagnostics/ampp-proxy-trace';
 
 @Controller('ampp-proxy')
 @UseGuards(SessionAuthGuard)
@@ -67,23 +69,29 @@ export class AmppProxyController {
   ): Promise<void> {
     const sessionSnapshot = this.proxySession.snapshot(req.session);
     const upstreamPath = this.getUpstreamPath(req, workloadId);
-    const allowedPath = this.isWorkloadPagePath(upstreamPath, workloadId)
-      ? this.policy.assertUiAccess(req.session, workloadId, upstreamPath)
-      : this.policy.assertUiResourceAccess(
-          req.session,
-          workloadId,
-          upstreamPath,
-        );
-    const upstreamResponse = await this.proxy.getUiResource(
-      req.sessionID,
-      req.session,
-      workloadId,
-      allowedPath,
-      req.headers,
-      this.getPublicOrigin(req),
+    const allowedPath = tracePhase('policy', () =>
+      this.isWorkloadPagePath(upstreamPath, workloadId)
+        ? this.policy.assertUiAccess(req.session, workloadId, upstreamPath)
+        : this.policy.assertUiResourceAccess(
+            req.session,
+            workloadId,
+            upstreamPath,
+          ),
+    );
+    const upstreamResponse = await tracePhase('proxy.ui', () =>
+      this.proxy.getUiResource(
+        req.sessionID,
+        req.session,
+        workloadId,
+        allowedPath,
+        req.headers,
+        this.getPublicOrigin(req),
+      ),
     );
 
-    await this.proxySession.saveIfChanged(req, sessionSnapshot);
+    await tracePhase('session.merge', () =>
+      this.proxySession.saveIfChanged(req, sessionSnapshot),
+    );
 
     res.status(upstreamResponse.status);
 
