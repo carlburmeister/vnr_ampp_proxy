@@ -1,0 +1,5 @@
+# Dedicated, disposable development MySQL instances only.
+# Disables binary logs used for replication and point-in-time recovery.
+# Read README.md and reclaim old logs before installing this profile.
+[mysqld]
+skip-log-bin
