@@ -32,6 +32,10 @@ export class MysqlSessionStore extends session.Store {
   private readonly ready: Promise<void>;
   private readonly cleanupTimer: NodeJS.Timeout;
   private cleaning = false;
+  private readonly completedPolls = new WeakMap<
+    session.SessionData,
+    { sid: string; expiresAt: number }
+  >();
 
   constructor(options: MysqlSessionStoreOptions) {
     super();
@@ -106,6 +110,8 @@ export class MysqlSessionStore extends session.Store {
     callback?: (error?: any) => void,
   ) {
     try {
+      // A later explicit/data save must retain its normal finalization behavior.
+      this.completedPolls.delete(sessionData);
       await this.ready;
 
       const [result] = await this.pool.execute<ResultSetHeader>(
@@ -125,6 +131,23 @@ export class MysqlSessionStore extends session.Store {
     } catch (error) {
       callback?.(error);
     }
+  }
+
+  async persistCurrentPoll(
+    sid: string,
+    sessionData: session.Session,
+    authorizationChanged: boolean,
+  ): Promise<number> {
+    this.completedPolls.delete(sessionData);
+    const expiresAt = this.getExpiresAt(sessionData);
+    await new Promise<void>((resolve, reject) => {
+      const done = (error?: Error) => (error ? reject(error) : resolve());
+      if (authorizationChanged) sessionData.save(done);
+      else void this.touch(sid, sessionData, done);
+    });
+    // Session objects are unique to a request; never suppress another tab's write.
+    this.completedPolls.set(sessionData, { sid, expiresAt });
+    return expiresAt;
   }
 
   async create(sid: string, sessionData: session.SessionData) {
@@ -156,6 +179,15 @@ export class MysqlSessionStore extends session.Store {
     callback?: (error?: any) => void,
   ) {
     try {
+      const completed = this.completedPolls.get(sessionData);
+      this.completedPolls.delete(sessionData);
+      if (completed?.sid === sid && completed.expiresAt > Date.now()) {
+        // express-session touches again at res.end(). Use the deadline already
+        // confirmed for this poll, including when it serializes the cookie.
+        sessionData.cookie.expires = new Date(completed.expiresAt);
+        callback?.();
+        return;
+      }
       await this.ready;
 
       const [result] = await this.pool.execute<ResultSetHeader>(
