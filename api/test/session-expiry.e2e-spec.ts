@@ -119,7 +119,8 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
     jest
       .mocked(createPool)
       .mockReturnValue({ execute, end: jest.fn() } as never);
-    store = new MysqlSessionStore({ port: 3306 });
+    const storeOptions = { port: 3306, touchIntervalMs: 0 };
+    store = new MysqlSessionStore(storeOptions);
     const module = await Test.createTestingModule({
       controllers: [
         AuthController,
