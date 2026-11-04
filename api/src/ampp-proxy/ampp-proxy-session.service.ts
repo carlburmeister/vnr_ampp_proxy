@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import type { SessionData } from 'express-session';
 
@@ -11,6 +11,7 @@ import {
   migrateAmppAccessToken,
   newerAmppAccessToken,
 } from './ampp-access-tokens';
+import { GVUI_MAILBOX_LIMIT, pruneGvuiMailboxes } from './gvui/gvui-mailboxes';
 
 const SESSION_KEYS = [
   'amppUserId',
@@ -151,10 +152,44 @@ export class AmppProxySessionService {
           const after = current.gvuiMailboxes ?? {};
           for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
             if (this.same(before[key], after[key])) continue;
-            if (!after[key]) delete merged[key];
-            else if (!merged[key] || merged[key].createdAt <= after[key].createdAt) merged[key] = this.clone(after[key]);
+            if (!after[key]) {
+              // A stale cleanup must not delete a concurrently renewed alias.
+              if (this.same(before[key], merged[key])) delete merged[key];
+            } else if (
+              before[key] &&
+              before[key].upstreamId === after[key].upstreamId &&
+              before[key].createdAt === after[key].createdAt
+            ) {
+              // Activity alone cannot restore a removed/recreated alias or
+              // overwrite its newer generation. Merge timestamps monotonically.
+              const entry = merged[key];
+              if (
+                entry &&
+                entry.upstreamId === after[key].upstreamId &&
+                entry.createdAt === after[key].createdAt
+              )
+                entry.lastUsedAt = Math.max(
+                  entry.lastUsedAt ?? entry.createdAt,
+                  after[key].lastUsedAt ?? after[key].createdAt,
+                );
+            } else if (
+              !merged[key] ||
+              merged[key].createdAt <= after[key].createdAt
+            ) {
+              merged[key] = this.clone(after[key]);
+            }
           }
           req.session.gvuiMailboxes = merged;
+          pruneGvuiMailboxes(req.session);
+          if (
+            Object.keys(req.session.gvuiMailboxes).length > GVUI_MAILBOX_LIMIT
+          ) {
+            // express-session can save error responses too. Do not leave an
+            // oversized/partial candidate available for that automatic save.
+            for (const key of SESSION_KEYS)
+              this.setValue(req.session, key, latest[key]);
+            throw new ConflictException('Too many open GV.UI mailboxes');
+          }
         }
 
         await this.saveSession(req);

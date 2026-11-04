@@ -593,6 +593,109 @@ describe('GVUI launch, proxy and notification isolation', () => {
     );
   });
 
+  it('keeps authorized mailbox aliases across repeated 25-minute boundaries and new tabs', async () => {
+    const { service, session, policy } = setup();
+    await service.launch(session, A);
+    await service.launch(session, B);
+    const createdAt = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(createdAt);
+    const create = (alias: string, id = A) => {
+      const prepared = service.prepareApiRequest(
+        session,
+        context(id),
+        'POST',
+        '/notifications/api/v1/mailbox',
+        Buffer.from(JSON.stringify({ id: alias })),
+      );
+      service.completeApiRequest(
+        session,
+        context(id),
+        prepared,
+        response({ id: prepared.mailbox.upstreamId }),
+      );
+      return prepared.mailbox.upstreamId;
+    };
+    try {
+      const upstreamId = create(MAIL);
+      for (const minutes of [25, 50, 75, 3 * 24 * 60]) {
+        clock.mockReturnValue(createdAt + minutes * 60000);
+        const poll = `/notifications/api/v1/notifications/${MAIL}?count=100&timeout=10000`;
+        expect(policy.assertApiAccess(session, context(), 'GET', poll)).toBe(
+          poll,
+        );
+        expect(
+          service.prepareApiRequest(session, context(), 'GET', poll).path,
+        ).toContain(upstreamId);
+        expect(
+          service.isNotificationTopicAllowed(
+            session,
+            context(),
+            MAIL,
+            'gv.ui.notifications.#',
+          ),
+        ).toBe(true);
+      }
+      const existing = { ...session.gvuiMailboxes[MAIL] };
+      create('ts-gvui--eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', B);
+      expect(session.gvuiMailboxes[MAIL]).toEqual(existing);
+      expect(Object.keys(session.gvuiMailboxes)).toHaveLength(2);
+      expect(() =>
+        service.prepareApiRequest(
+          session,
+          context(B),
+          'GET',
+          `/notifications/api/v1/notifications/${MAIL}`,
+        ),
+      ).toThrow(ForbiddenException);
+      expect(() =>
+        service.prepareApiRequest(
+          { ...session, gvuiMailboxes: {} },
+          context(),
+          'GET',
+          `/notifications/api/v1/notifications/${MAIL}`,
+        ),
+      ).toThrow(ForbiddenException);
+      session.allowedGvuiLayoutIds = [B];
+      expect(() =>
+        service.prepareApiRequest(
+          session,
+          context(),
+          'GET',
+          `/notifications/api/v1/notifications/${MAIL}`,
+        ),
+      ).toThrow(ForbiddenException);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('retains the mailbox limit without evicting another authorized tab by age', async () => {
+    const { service, session } = setup();
+    await service.launch(session, A);
+    session.gvuiMailboxes = Object.fromEntries(
+      Array.from({ length: 512 }, (_, i) => [
+        `existing-${i}`,
+        { contextId: context(), upstreamId: `upstream-${i}`, createdAt: 1 },
+      ]),
+    );
+    const prepared = service.prepareApiRequest(
+      session,
+      context(),
+      'POST',
+      '/notifications/api/v1/mailbox',
+      Buffer.from(JSON.stringify({ id: MAIL })),
+    );
+    expect(() =>
+      service.completeApiRequest(
+        session,
+        context(),
+        prepared,
+        response({ id: prepared.mailbox.upstreamId }),
+      ),
+    ).toThrow(ConflictException);
+    expect(Object.keys(session.gvuiMailboxes)).toHaveLength(512);
+  });
+
   // Synthetic complete-configuration notifications: a real non-empty AMPP
   // update capture is still needed before claiming delta-event support.
   it('filters non-empty HTTP configuration events and drops unknown/cross-layout payloads', async () => {

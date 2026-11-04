@@ -29,6 +29,8 @@ import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
 import { GvuiProxyService } from './gvui/gvui-proxy.service';
 import { filterDiscoveryNodeResponse } from './ampp-discovery-filter';
+// TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
+import { traceMailbox } from './diagnostics/ampp-proxy-trace';
 
 @Injectable()
 export class AmppProxyService {
@@ -146,6 +148,14 @@ export class AmppProxyService {
       upstreamPath,
     );
     const prepared = this.gvui.prepareApiRequest(session, workloadId, method, upstreamPath, body);
+    traceMailbox(
+      'mailbox.request',
+      method,
+      upstreamPath,
+      prepared.path,
+      body,
+      prepared.body,
+    );
     const sessionToken = this.bearerToken.getSessionToken(
       session,
       method,
@@ -208,6 +218,15 @@ export class AmppProxyService {
     amppProxySessionDebugLog(
       `AMPP API request completed status=${response.status} method=${method} path=${upstreamPath}`,
       frontendSessionId,
+    );
+    traceMailbox(
+      'mailbox.response',
+      method,
+      upstreamPath,
+      prepared.path,
+      body,
+      prepared.body,
+      response.status,
     );
 
     return this.responseRewriter.rewriteApi(
