@@ -2,13 +2,20 @@ import './auth/types/session-data';
 
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { json, raw, urlencoded } from 'express';
 import session from 'express-session';
 import { NestExpressApplication } from '@nestjs/platform-express';
 
-import { MysqlSessionStore } from './auth/mysql-session.store';
+import {
+  DEFAULT_SESSION_TOUCH_INTERVAL_MS,
+  MysqlSessionStore,
+} from './auth/mysql-session.store';
 import { SESSION_MAX_AGE, sessionCookieSettings } from './auth/session-cookie';
+import {
+  SessionRenewalInterceptor,
+  withConfirmedSessionCookies,
+} from './auth/session-renewal';
 
 import { AppModule } from './app.module';
 import { AmppWebSocketProxyService } from './ampp-proxy/ampp-websocket-proxy.service';
@@ -64,24 +71,35 @@ async function bootstrap() {
     user: config.get<string>('MYSQL_USER'),
     password: config.get<string>('MYSQL_PASSWORD'),
     database: config.get<string>('MYSQL_DATABASE'),
+    touchIntervalMs: Number(
+      config.get<string>('SESSION_TOUCH_INTERVAL_MS') ??
+        DEFAULT_SESSION_TOUCH_INTERVAL_MS,
+    ),
   });
   // TEMP AMPP trace: observes callbacks; adds no database operations.
   traceSessionStore(sessionStore);
 
-  const sessionMiddleware = session({
-    store: sessionStore,
-    name: sessionCookie.name,
-    secret: sessionSecret,
-    resave: false,
-    saveUninitialized: false,
-    rolling: true,
-    cookie: {
-      ...sessionCookie.cookie,
-      maxAge: SESSION_MAX_AGE,
-    },
-  });
+  const sessionMiddleware = withConfirmedSessionCookies(
+    session({
+      store: sessionStore,
+      name: sessionCookie.name,
+      secret: sessionSecret,
+      resave: false,
+      saveUninitialized: false,
+      rolling: true,
+      cookie: {
+        ...sessionCookie.cookie,
+        maxAge: SESSION_MAX_AGE,
+      },
+    }),
+    sessionStore,
+    sessionCookie.name,
+  );
 
   app.use(sessionMiddleware);
+  app.useGlobalInterceptors(
+    new SessionRenewalInterceptor(config, app.get(Reflector)),
+  );
   app
     .get(AmppWebSocketProxyService)
     .attach(app.getHttpServer(), sessionMiddleware);

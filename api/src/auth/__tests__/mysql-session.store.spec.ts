@@ -31,7 +31,8 @@ describe('MysqlSessionStore expiry and revocation', () => {
     jest
       .mocked(createPool)
       .mockReturnValue({ execute, end: jest.fn() } as never);
-    store = new MysqlSessionStore({ port: 3306 });
+    const options = { port: 3306, touchIntervalMs: 0 };
+    store = new MysqlSessionStore(options);
     // Await initialization through the same public path used by login.
     await store.create('initial', data());
     execute.mockClear();
@@ -96,7 +97,8 @@ describe('MysqlSessionStore expiry and revocation', () => {
   it('cleans abandoned sessions periodically in bounded batches and stops on close', async () => {
     await store.close();
     jest.useFakeTimers();
-    store = new MysqlSessionStore({ port: 3306 });
+    const options = { port: 3306, touchIntervalMs: 0 };
+    store = new MysqlSessionStore(options);
     await store.create('new-login', data());
     execute.mockClear();
     await jest.advanceTimersByTimeAsync(60000);
@@ -109,4 +111,14 @@ describe('MysqlSessionStore expiry and revocation', () => {
     await jest.advanceTimersByTimeAsync(60000);
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it.each([-1, 1.5, NaN, Infinity, SESSION_MAX_AGE])(
+    'rejects an invalid renewal interval of %s',
+    (touchIntervalMs) => {
+      const options = { port: 3306, touchIntervalMs };
+      expect(() => new MysqlSessionStore(options)).toThrow(
+        'SESSION_TOUCH_INTERVAL_MS',
+      );
+    },
+  );
 });

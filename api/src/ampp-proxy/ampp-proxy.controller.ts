@@ -11,6 +11,7 @@ import {
 import type { Request, Response } from 'express';
 
 import { SessionAuthGuard } from '../auth/session-auth.guard';
+import { renewSessionForResponse } from '../auth/session-renewal';
 import { AmppProxyPolicyService } from './ampp-proxy-policy.service';
 import { AmppResponseRewriterService } from './ampp-response-rewriter.service';
 import { AmppProxyService } from './ampp-proxy.service';
@@ -93,6 +94,9 @@ export class AmppProxyController {
       this.proxySession.saveIfChanged(req, sessionSnapshot),
     );
 
+    if (res.destroyed) return;
+    await renewSessionForResponse(req);
+    if (res.destroyed) return;
     res.status(upstreamResponse.status);
 
     for (const [name, value] of Object.entries(upstreamResponse.headers)) {

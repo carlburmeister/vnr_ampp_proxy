@@ -14,7 +14,10 @@ import { ConfigService } from '@nestjs/config';
 
 import { LoginDto } from './dto/login.dto';
 import { AuthService } from './auth.service';
-import { SessionAuthGuard } from './session-auth.guard';
+import {
+  PersistSessionInController,
+  SessionAuthGuard,
+} from './session-auth.guard';
 import { MysqlSessionStore } from './mysql-session.store';
 import { clearSessionCookie } from './session-cookie';
 
@@ -30,6 +33,8 @@ export class AuthController {
   //  login()
   /*-------------------------------------------------------------*/ 
   @Post('login')
+  // Fresh login must not depend on the validity of its previous session row.
+  @PersistSessionInController(true)
   async login(@Req() req: Request, @Body() body: LoginDto) {
     
     const result = await this.auth.login(body.username, body.password);
@@ -86,6 +91,8 @@ export class AuthController {
   //  logout()
   /*-------------------------------------------------------------*/ 
   @Post('logout')
+  // Sign-out owns deletion, including an already-revoked previous session.
+  @PersistSessionInController(true)
   @HttpCode(204)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     
