@@ -6,11 +6,19 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ConfigService } from '@nestjs/config';
+import { Reflector } from '@nestjs/core';
 import { AuthService } from './auth.service';
 import { SessionExpiredError } from './mysql-session.store';
 import { clearSessionCookie } from './session-cookie';
 // TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
 import { tracePhase } from '../ampp-proxy/diagnostics/ampp-proxy-trace';
+
+export const PersistSessionInController = Reflector.createDecorator<boolean>();
+const pendingAuthorizationSaves = new WeakSet<Request>();
+
+export function hasPendingAuthorizationSave(request: Request): boolean {
+  return pendingAuthorizationSaves.has(request);
+}
 
 export async function rejectExpiredSession(
   request: Request,
@@ -37,6 +45,7 @@ export class SessionAuthGuard implements CanActivate {
   constructor(
     private readonly auth: AuthService,
     private readonly config: ConfigService,
+    private readonly reflector: Reflector,
   ) {}
 
   canActivate(context: ExecutionContext): Promise<boolean> {
@@ -55,7 +64,13 @@ export class SessionAuthGuard implements CanActivate {
       const changed = await tracePhase('authorization.refresh', () =>
         this.auth.refreshSessionAuthorization(request.session),
       );
-      if (changed) {
+      if (
+        changed &&
+        this.reflector.get(PersistSessionInController, context.getHandler())
+      ) {
+        // Only an explicitly marked controller owns this request's final save.
+        pendingAuthorizationSaves.add(request);
+      } else if (changed) {
         request.session.touch();
         await new Promise<void>((resolve, reject) => {
           request.session.save((error?: Error) =>

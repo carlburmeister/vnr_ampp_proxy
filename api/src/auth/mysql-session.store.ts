@@ -1,6 +1,7 @@
 import session from 'express-session';
 import { Logger } from '@nestjs/common';
 import { SESSION_MAX_AGE } from './session-cookie';
+import type { Request } from 'express';
 import {
   createPool,
   type Pool,
@@ -14,7 +15,10 @@ export type MysqlSessionStoreOptions = {
   user?: string;
   password?: string;
   database?: string;
+  touchIntervalMs?: number;
 };
+
+export const DEFAULT_SESSION_TOUCH_INTERVAL_MS = 60000;
 
 type SessionRow = RowDataPacket & {
   data: string;
@@ -28,13 +32,34 @@ export class SessionExpiredError extends Error {
 }
 
 export class MysqlSessionStore extends session.Store {
+  readonly touchIntervalMs: number;
   private readonly pool: Pool;
   private readonly ready: Promise<void>;
   private readonly cleanupTimer: NodeJS.Timeout;
   private cleaning = false;
+  private readonly completedPolls = new WeakMap<
+    session.SessionData,
+    { sid: string; expiresAt: number }
+  >();
+  private readonly confirmedDeadlines = new WeakMap<
+    session.SessionData,
+    number
+  >();
 
   constructor(options: MysqlSessionStoreOptions) {
     super();
+
+    this.touchIntervalMs =
+      options.touchIntervalMs ?? DEFAULT_SESSION_TOUCH_INTERVAL_MS;
+    if (
+      !Number.isSafeInteger(this.touchIntervalMs) ||
+      this.touchIntervalMs < 0 ||
+      this.touchIntervalMs >= SESSION_MAX_AGE
+    ) {
+      throw new Error(
+        'SESSION_TOUCH_INTERVAL_MS must be an integer from 0 to less than eight hours',
+      );
+    }
 
     this.pool = createPool({
       host: options.host,
@@ -64,6 +89,16 @@ export class MysqlSessionStore extends session.Store {
         });
     }, 60000);
     this.cleanupTimer.unref();
+  }
+
+  createSession(req: Request, data: session.SessionData) {
+    const loaded = super.createSession(req, data);
+    this.confirmExpiry(loaded, this.getExpiresAt(loaded));
+    return loaded;
+  }
+
+  confirmedExpiry(data?: session.SessionData): number | undefined {
+    return data ? this.confirmedDeadlines.get(data) : undefined;
   }
 
   async get(
@@ -106,20 +141,22 @@ export class MysqlSessionStore extends session.Store {
     callback?: (error?: any) => void,
   ) {
     try {
+      // A later explicit/data save must retain its normal finalization behavior.
+      this.completedPolls.delete(sessionData);
       await this.ready;
+      const expiresAt = this.getExpiresAt(sessionData);
 
       const [result] = await this.pool.execute<ResultSetHeader>(
         `UPDATE user_sessions
          SET expires_at = GREATEST(expires_at, ?), data = ?
          WHERE session_id = ? AND expires_at > ?`,
-        [
-          this.getExpiresAt(sessionData),
-          JSON.stringify(sessionData),
-          sid,
-          Date.now(),
-        ],
+        [expiresAt, JSON.stringify(sessionData), sid, Date.now()],
       );
       if (!result.affectedRows) throw new SessionExpiredError();
+      this.confirmExpiry(sessionData, expiresAt);
+      if (this.touchIntervalMs > 0) {
+        this.completedPolls.set(sessionData, { sid, expiresAt });
+      }
 
       callback?.();
     } catch (error) {
@@ -127,12 +164,35 @@ export class MysqlSessionStore extends session.Store {
     }
   }
 
+  async persistCurrentPoll(
+    sid: string,
+    sessionData: session.Session,
+    authorizationChanged: boolean,
+  ): Promise<number> {
+    await new Promise<void>((resolve, reject) => {
+      const done = (error?: Error) => (error ? reject(error) : resolve());
+      if (authorizationChanged) sessionData.save(done);
+      else void this.touch(sid, sessionData, done);
+    });
+    const expiresAt = this.getExpiresAt(sessionData);
+    // Session objects are unique to a request; never suppress another tab's write.
+    this.completedPolls.set(sessionData, { sid, expiresAt });
+    return expiresAt;
+  }
+
+  renewForResponse(sid: string, data: session.Session): Promise<number> {
+    data.touch();
+    return this.persistCurrentPoll(sid, data, false);
+  }
+
   async create(sid: string, sessionData: session.SessionData) {
     await this.ready;
+    const expiresAt = this.getExpiresAt(sessionData);
     await this.pool.execute<ResultSetHeader>(
       `INSERT INTO user_sessions (session_id, expires_at, data) VALUES (?, ?, ?)`,
-      [sid, this.getExpiresAt(sessionData), JSON.stringify(sessionData)],
+      [sid, expiresAt, JSON.stringify(sessionData)],
     );
+    this.confirmExpiry(sessionData, expiresAt);
   }
 
   async destroy(sid: string, callback?: (error?: any) => void) {
@@ -156,19 +216,81 @@ export class MysqlSessionStore extends session.Store {
     callback?: (error?: any) => void,
   ) {
     try {
+      const expiresAt = this.getExpiresAt(sessionData);
+      const completed = this.completedPolls.get(sessionData);
+      this.completedPolls.delete(sessionData);
+      if (
+        completed?.sid === sid &&
+        completed.expiresAt > Date.now() &&
+        (this.touchIntervalMs === 0 ||
+          expiresAt - completed.expiresAt < this.touchIntervalMs)
+      ) {
+        // express-session touches again at res.end(). Use the deadline already
+        // confirmed for this poll, including when it serializes the cookie.
+        this.confirmExpiry(sessionData, completed.expiresAt);
+        callback?.();
+        return;
+      }
       await this.ready;
+
+      if (this.touchIntervalMs > 0) {
+        const storedExpiry = await this.readExpiry(sid);
+        if (expiresAt - storedExpiry < this.touchIntervalMs) {
+          this.confirmExpiry(sessionData, storedExpiry);
+          callback?.();
+          return;
+        }
+        const [result] = await this.pool.execute<ResultSetHeader>(
+          `UPDATE user_sessions SET expires_at = GREATEST(expires_at, ?)
+           WHERE session_id = ? AND expires_at > ? AND expires_at <= ?`,
+          [expiresAt, sid, Date.now(), expiresAt - this.touchIntervalMs],
+        );
+        // Another process may have renewed the row or deleted it after our read.
+        this.confirmExpiry(
+          sessionData,
+          result.affectedRows
+            ? Math.max(storedExpiry, expiresAt)
+            : await this.readExpiry(sid),
+        );
+        callback?.();
+        return;
+      }
 
       const [result] = await this.pool.execute<ResultSetHeader>(
         `UPDATE user_sessions SET expires_at = GREATEST(expires_at, ?)
          WHERE session_id = ? AND expires_at > ?`,
-        [this.getExpiresAt(sessionData), sid, Date.now()],
+        [expiresAt, sid, Date.now()],
       );
       if (!result.affectedRows) throw new SessionExpiredError();
+      this.confirmExpiry(sessionData, expiresAt);
 
       callback?.();
     } catch (error) {
       callback?.(error);
     }
+  }
+
+  private async readExpiry(sid: string): Promise<number> {
+    const [rows] = await this.pool.execute<
+      (RowDataPacket & { expires_at: number })[]
+    >(
+      `SELECT expires_at FROM user_sessions
+       WHERE session_id = ? AND expires_at > ? LIMIT 1`,
+      [sid, Date.now()],
+    );
+    const expiresAt = Number(rows[0]?.expires_at);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now())
+      throw new SessionExpiredError();
+    return expiresAt;
+  }
+
+  private confirmExpiry(data: session.SessionData, expiresAt: number): void {
+    this.confirmedDeadlines.set(data, expiresAt);
+    // Assigning Cookie.expires also resets originalMaxAge in express-session.
+    // Retain the eight-hour rolling lifetime when reusing an older deadline.
+    const maxAge = data.cookie.originalMaxAge;
+    data.cookie.expires = new Date(expiresAt);
+    data.cookie.originalMaxAge = maxAge;
   }
 
   async close() {
