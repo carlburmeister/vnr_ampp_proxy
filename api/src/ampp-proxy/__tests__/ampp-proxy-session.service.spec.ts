@@ -82,6 +82,106 @@ describe('AMPP proxy session persistence', () => {
     expect(req.session.save).toHaveBeenCalledTimes(1);
   });
 
+  it('persists a learned recorder even when no other session field changes', async () => {
+    const { req, service } = setup({ amppUserId: 'before' });
+    req.session.amppUserId = 'before';
+    const snapshot = service.snapshot(req.session as never);
+    Object.assign(req.session, {
+      amppRecorderIdsByWorkload: { first: 'recorder-one' },
+    });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect(req.session.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('merges recorder IDs loaded by independent workload tabs', async () => {
+    const { req, service, snapshot } = setup({
+      amppRecorderIdsByWorkload: { second: 'recorder-two' },
+    });
+    Object.assign(req.session, {
+      amppRecorderIdsByWorkload: { first: 'recorder-one' },
+    });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect(req.session).toMatchObject({
+      amppRecorderIdsByWorkload: {
+        first: 'recorder-one',
+        second: 'recorder-two',
+      },
+    });
+  });
+
+  it.each(['old-recorder', 'delayed-recorder'])(
+    'does not overwrite a concurrently replaced recorder with %s',
+    async (after) => {
+      const { req, service } = setup({
+        amppRecorderIdsByWorkload: { first: 'new-recorder' },
+      });
+      Object.assign(req.session, {
+        amppRecorderIdsByWorkload: { first: 'old-recorder' },
+      });
+      const snapshot = service.snapshot(req.session as never);
+      Object.assign(req.session, {
+        amppRecorderIdsByWorkload: { first: after },
+      });
+      req.session.amppUserId = 'changed-after-snapshot';
+      await service.saveIfChanged(req as unknown as Request, snapshot);
+      expect(req.session).toMatchObject({
+        amppRecorderIdsByWorkload: { first: 'new-recorder' },
+      });
+    },
+  );
+
+  it('replaces an uncontested recorder association without retaining its old ID', async () => {
+    const { req, service } = setup({
+      amppRecorderIdsByWorkload: { first: 'old-recorder' },
+    });
+    Object.assign(req.session, {
+      amppRecorderIdsByWorkload: { first: 'old-recorder' },
+    });
+    const snapshot = service.snapshot(req.session as never);
+    Object.assign(req.session, {
+      amppRecorderIdsByWorkload: { first: 'new-recorder' },
+    });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect(req.session).toMatchObject({
+      amppRecorderIdsByWorkload: { first: 'new-recorder' },
+    });
+  });
+
+  it('does not restore a recorder association removed by another request', async () => {
+    const { req, service } = setup({ amppRecorderIdsByWorkload: {} });
+    Object.assign(req.session, {
+      amppRecorderIdsByWorkload: { first: 'old-recorder' },
+    });
+    const snapshot = service.snapshot(req.session as never);
+    Object.assign(req.session, {
+      amppRecorderIdsByWorkload: { first: 'delayed-recorder' },
+    });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect(req.session).toMatchObject({ amppRecorderIdsByWorkload: {} });
+    expect(req.session).not.toHaveProperty('amppRecorderIdsByWorkload.first');
+  });
+
+  it('drops a learned recorder if authorization changed while settings were loading', async () => {
+    const { req, service, snapshot } = setup({
+      authorizationFingerprint: 'revoked',
+    });
+    Object.assign(req.session, {
+      amppRecorderIdsByWorkload: { first: 'recorder-one' },
+    });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect(req.session).toHaveProperty('amppRecorderIdsByWorkload', undefined);
+    expect(req.session.save).not.toHaveBeenCalled();
+  });
+
+  it('does not recreate a logged-out session after learning a recorder', async () => {
+    const { req, service, snapshot } = setup(null);
+    Object.assign(req.session, {
+      amppRecorderIdsByWorkload: { first: 'recorder-one' },
+    });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect(req.session.save).not.toHaveBeenCalled();
+  });
+
   it('merges activity monotonically instead of restoring an older timestamp', async () => {
     const original = {
       contextId: 'gvui-layout',

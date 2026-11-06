@@ -193,6 +193,7 @@ export class AmppProxyService {
     response = this.gvui.completeApiRequest(session, workloadId, prepared, response);
     this.captureAmppUserId(session, upstreamPath, response);
     this.captureNotificationMailbox(session, method, upstreamPath, response);
+    this.captureRecorderId(session, method, upstreamPath, response);
 
     response = this.matrixFilter.filterApiResponse(
       session,
@@ -234,6 +235,49 @@ export class AmppProxyService {
       publicOrigin,
       response,
     );
+  }
+
+  private captureRecorderId(
+    session: SessionData,
+    method: string,
+    upstreamPath: string,
+    response: AmppCookieHttpResponse,
+  ): void {
+    const target = new URL(upstreamPath, this.platformUrl);
+    const workload = target.pathname.match(
+      /^\/mocha\/application\/([0-9a-f-]{36})\/api\/v1\/app\/recordingsettings\/?$/i,
+    );
+    if (
+      method.toUpperCase() !== 'GET' ||
+      target.search ||
+      !workload ||
+      response.status !== 200
+    ) {
+      return;
+    }
+
+    try {
+      const settings: unknown = JSON.parse(response.body.toString('utf8'));
+      const recorderId =
+        settings && typeof settings === 'object' && !Array.isArray(settings)
+          ? (settings as Record<string, unknown>).recorderId
+          : undefined;
+      if (
+        typeof recorderId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          recorderId,
+        )
+      ) {
+        return;
+      }
+
+      // The controller authorized this upstream workload. Browser settings POSTs
+      // and their echoed responses must never establish notification grants.
+      (session.amppRecorderIdsByWorkload ??= {})[workload[1].toLowerCase()] =
+        recorderId.toLowerCase();
+    } catch {
+      // Failed or malformed settings responses do not establish a recorder grant.
+    }
   }
 
   private captureNotificationMailbox(

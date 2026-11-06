@@ -508,6 +508,39 @@ describe('AuthService', () => {
     expect(session.amppTokenGeneration).toEqual(expect.any(String));
   });
 
+  it('clears learned recorder associations when authorization is rebuilt', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    const session = {} as SessionData;
+    service.applyAuthorization(
+      session,
+      await service.login('admin', 'password'),
+    );
+    Object.assign(session, {
+      amppRecorderIdsByWorkload: { workload: 'recorder' },
+    });
+    session.authorizationFingerprint = 'old-permissions';
+    session.authorizationCheckedAt = 0;
+    await service.refreshSessionAuthorization(session);
+    expect(session).toHaveProperty('amppRecorderIdsByWorkload', undefined);
+  });
+
+  it('preserves learned recorder associations when permissions are unchanged', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    const session = {} as SessionData;
+    service.applyAuthorization(
+      session,
+      await service.login('admin', 'password'),
+    );
+    Object.assign(session, {
+      amppRecorderIdsByWorkload: { workload: 'recorder' },
+    });
+    session.authorizationCheckedAt = 0;
+    await service.refreshSessionAuthorization(session);
+    expect(session).toMatchObject({
+      amppRecorderIdsByWorkload: { workload: 'recorder' },
+    });
+  });
+
   it('does not advance the refresh deadline or authorize a request after a GVUI database failure', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
     const session: any = {};

@@ -523,6 +523,7 @@ export class AmppProxyPolicyService {
             ...getDashboardResourceIds(session, workloadId, 'node'),
           ]),
           dashboardScope,
+          session.amppRecorderIdsByWorkload?.[workloadId.toLowerCase()],
         )),
     );
   }
@@ -534,8 +535,14 @@ export class AmppProxyPolicyService {
     allowedFabricIds: Set<string>,
     allowedNodeIds: Set<string>,
     dashboardScope: boolean,
+    recorderId?: string,
   ): boolean {
     const normalizedTopic = topic.toLowerCase();
+
+    const recorder = topic.match(/^gv\.fabric\.recorder\.([0-9a-f-]{36})\.#$/i);
+    if (recorder) {
+      return recorder[1].toLowerCase() === recorderId?.toLowerCase();
+    }
 
     if (GLOBAL_NOTIFICATION_TOPICS.has(normalizedTopic)) {
       return true;

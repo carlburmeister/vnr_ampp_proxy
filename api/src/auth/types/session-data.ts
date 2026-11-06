@@ -68,6 +68,7 @@ declare module 'express-session' {
     amppMatrixAccess?: AmppMatrixAccess;
     amppDashboardMatrixAccess?: AmppDashboardMatrixAccess;
     amppNotificationMailboxIds?: string[];
+    amppRecorderIdsByWorkload?: Record<string, string>;
   }
 }
 

@@ -22,6 +22,7 @@ const SESSION_KEYS = [
   'amppMatrixAccess',
   'amppDashboardMatrixAccess',
   'amppNotificationMailboxIds',
+  'amppRecorderIdsByWorkload',
   'gvuiMailboxes',
 ] as const;
 
@@ -79,6 +80,7 @@ export class AmppProxySessionService {
             'gvuiMailboxes',
             'amppAllowedWorkloadIds', 'amppResourceWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
             'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
+            'amppRecorderIdsByWorkload',
           ] as const) {
             (req.session as any)[key] = this.clone<unknown>(latest[key]);
           }
@@ -143,6 +145,23 @@ export class AmppProxySessionService {
             snapshot.values.amppNotificationMailboxIds,
             current.amppNotificationMailboxIds,
           );
+        }
+
+        if (changedKeys.includes('amppRecorderIdsByWorkload')) {
+          const before = snapshot.values.amppRecorderIdsByWorkload ?? {};
+          const after = current.amppRecorderIdsByWorkload ?? {};
+          const merged = { ...latest.amppRecorderIdsByWorkload };
+          for (const id of new Set([
+            ...Object.keys(before),
+            ...Object.keys(after),
+          ])) {
+            // Merge independent workloads without restoring an association that
+            // another request has already replaced or removed.
+            if (before[id] === after[id] || merged[id] !== before[id]) continue;
+            if (after[id] === undefined) delete merged[id];
+            else merged[id] = after[id];
+          }
+          req.session.amppRecorderIdsByWorkload = merged;
         }
 
         if (changedKeys.includes('gvuiMailboxes')) {
