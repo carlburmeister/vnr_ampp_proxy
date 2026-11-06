@@ -133,11 +133,26 @@ export class AmppProxyService {
       frontendSessionId,
     );
 
+    const responseUrl = new URL(response.url);
+    const applicationId = responseUrl.pathname
+      .match(/^\/mocha\/application\/([^/]+)(?:\/|$)/i)?.[1]
+      .toLowerCase();
+    const recorderUi =
+      responseUrl.origin === this.platformUrl.origin &&
+      (session.allowedWorkloads ?? [])
+        .flatMap((workload) => [workload, ...(workload.child_workloads ?? [])])
+        .some(
+          (workload) =>
+            workload.id.toLowerCase() === applicationId &&
+            workload.packageName === 'GV.AMPP.Apps.Recorder',
+        );
+
     return this.browserSecurity.secureUiResponse(
       this.responseRewriter.rewrite(
         workloadId,
         publicOrigin,
         response,
+        recorderUi,
       ),
     );
   }

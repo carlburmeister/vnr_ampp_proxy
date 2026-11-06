@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { createAmppRedirectStorageScript } from './ampp-redirect-storage';
 import type { AmppCookieHttpResponse } from './ampp-cookie-http.service';
 import { createAmppBrowserDiagnosticsScript } from './ampp-browser-diagnostics';
+import { createAmppRecorderInputScrollScript } from './ampp-recorder-input-scroll';
 
 export type AmppBrowserResponse = {
   status: number;
@@ -25,6 +26,7 @@ export class AmppResponseRewriterService {
     workloadId: string,
     publicOrigin: string,
     response: AmppCookieHttpResponse,
+    recorderUi = false,
   ): AmppBrowserResponse {
     const contentType = this.headerValue(response.headers['content-type']);
     const headers = this.createBrowserHeaders(
@@ -43,6 +45,7 @@ export class AmppResponseRewriterService {
         response.url,
         contentType,
         response.body,
+        recorderUi,
       ),
     };
   }
@@ -224,6 +227,7 @@ export class AmppResponseRewriterService {
     responseUrl: string,
     contentType: string,
     body: Buffer,
+    recorderUi: boolean,
   ): Buffer {
     // HTML and CSS need rewriting; JavaScript and all other resources can be
     // returned as the original Buffer without unnecessary UTF-8 decoding.
@@ -231,7 +235,13 @@ export class AmppResponseRewriterService {
 
     if (/text\/html|application\/xhtml\+xml/i.test(contentType)) {
       return Buffer.from(
-        this.rewriteHtml(body.toString('utf8'), responseUrl, workloadId, publicOrigin),
+        this.rewriteHtml(
+          body.toString('utf8'),
+          responseUrl,
+          workloadId,
+          publicOrigin,
+          recorderUi,
+        ),
       );
     }
 
@@ -249,6 +259,7 @@ export class AmppResponseRewriterService {
     responseUrl: string,
     workloadId: string,
     publicOrigin: string,
+    recorderUi: boolean,
   ): string {
     const rawElements: string[] = [];
     let rewritten = html.replace(
@@ -318,6 +329,7 @@ export class AmppResponseRewriterService {
     return this.insertIntoHead(
       rewritten,
       this.createRuntimeRewriteScript(responseUrl, workloadId) +
+        (recorderUi ? createAmppRecorderInputScrollScript() : '') +
         // Temporary, opt-in GVUI browser diagnostics; remove with its module.
         (this.config.get<string>('AMPP_PROXY_BROWSER_DIAGNOSTICS') === 'true'
           ? createAmppBrowserDiagnosticsScript(workloadId)

@@ -11,6 +11,50 @@ describe('AmppResponseRewriterService', () => {
     get: () => undefined,
   } as any);
 
+  it('injects the Recorder correction only into opted-in HTML', () => {
+    const response = {
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+      body: Buffer.from('<html><head></head><body></body></html>'),
+      url: `${PLATFORM_URL}/mocha/application/${SOURCE_WORKLOAD_ID}/embedded/`,
+    };
+    expect(
+      service
+        .rewrite(SOURCE_WORKLOAD_ID, PUBLIC_ORIGIN, response)
+        .body.toString(),
+    ).not.toContain('data-ampp-recorder-input-scroll');
+    const rewritten = service.rewrite(
+      SOURCE_WORKLOAD_ID,
+      PUBLIC_ORIGIN,
+      response,
+      true,
+    );
+    expect(rewritten.body.toString()).toContain(
+      'data-ampp-recorder-input-scroll',
+    );
+    expect(rewritten.headers['Cache-Control']).toBe('no-store');
+  });
+
+  it('preserves Recorder JavaScript bytes and existing cache policy', () => {
+    const body = Buffer.from('window.recorder = true;');
+    const response = {
+      status: 200,
+      headers: { 'content-type': 'text/javascript', etag: '"recorder-1"' },
+      body,
+      url: `${PLATFORM_URL}/mocha/application/${SOURCE_WORKLOAD_ID}/main.js`,
+    };
+    const result = service.rewrite(
+      SOURCE_WORKLOAD_ID,
+      PUBLIC_ORIGIN,
+      response,
+      true,
+    );
+    expect(result.body).toBe(body);
+    expect(result.headers).toEqual(
+      service.rewrite(SOURCE_WORKLOAD_ID, PUBLIC_ORIGIN, response).headers,
+    );
+  });
+
   it('caches unmodified wrapper JavaScript privately and preserves validators', () => {
     const body = Buffer.from('window.ok = true;');
     const result = service.rewrite(SOURCE_WORKLOAD_ID, PUBLIC_ORIGIN, {
