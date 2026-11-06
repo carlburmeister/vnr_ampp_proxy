@@ -29,6 +29,12 @@ import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
 import { GvuiProxyService } from './gvui/gvui-proxy.service';
 import { filterDiscoveryNodeResponse } from './ampp-discovery-filter';
+import {
+  AmppRecorderRoutingService,
+  type RecorderOperationContext,
+  type RecorderRequest,
+  type RecorderRequestOptions,
+} from './ampp-recorder-routing.service';
 // TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
 import { traceMailbox } from './diagnostics/ampp-proxy-trace';
 
@@ -47,6 +53,10 @@ export class AmppProxyService {
     private readonly sessionBroker: AmppSessionBrokerService,
     private readonly utilityLogin: AmppUtilityLoginService,
     private readonly gvui: GvuiProxyService,
+    private readonly recorderRouting: AmppRecorderRoutingService = new AmppRecorderRoutingService(
+      matrixFilter,
+      config,
+    ),
   ) {
     this.platformUrl = new URL(
       this.config.getOrThrow<string>('PLATFORM_URL'),
@@ -141,6 +151,7 @@ export class AmppProxyService {
     browserHeaders: IncomingHttpHeaders,
     body: Buffer | undefined,
     publicOrigin: string,
+    operationContext: RecorderOperationContext = {},
   ): Promise<AmppBrowserResponse> {
     const cookieJar = await this.sessionBroker.getCookieJar(
       frontendSessionId,
@@ -156,39 +167,66 @@ export class AmppProxyService {
       body,
       prepared.body,
     );
-    const sessionToken = this.bearerToken.getSessionToken(
-      session,
-      method,
-      prepared.path,
-    );
-    let token = sessionToken ?? (await this.bearerToken.getToken());
-    let response = await this.requestApiResource(
-      cookieJar,
-      method,
-      prepared.path,
-      browserHeaders,
-      prepared.body,
-      workloadId,
-      publicOrigin,
-      token,
-    );
-
-    if (response.status === 401 && sessionToken) {
-      this.bearerToken.clearSessionToken(session, sessionToken);
-    } else if (response.status === 401) {
-      this.bearerToken.invalidate();
-      token = await this.bearerToken.getToken();
-      response = await this.requestApiResource(
+    const execute: RecorderRequest = async (
+      requestMethod,
+      requestPath,
+      requestBody,
+      options,
+    ) => {
+      // Internal discovery/route reads must not inherit browser validators or
+      // service-instance overrides intended for the original application call.
+      const upstreamHeaders =
+        options && (requestMethod !== method || requestPath !== prepared.path)
+          ? { accept: 'application/json', 'content-type': 'application/json' }
+          : browserHeaders;
+      const sessionToken = this.bearerToken.getSessionToken(
+        session,
+        requestMethod,
+        requestPath,
+      );
+      let token = sessionToken ?? (await this.bearerToken.getToken());
+      options?.signal.throwIfAborted();
+      let result = await this.requestApiResource(
         cookieJar,
-        method,
-        prepared.path,
-        browserHeaders,
-        prepared.body,
+        requestMethod,
+        requestPath,
+        upstreamHeaders,
+        requestBody,
         workloadId,
         publicOrigin,
         token,
+        options,
       );
-    }
+      if (result.status === 401 && sessionToken) {
+        this.bearerToken.clearSessionToken(session, sessionToken);
+      } else if (result.status === 401) {
+        this.bearerToken.invalidate();
+        token = await this.bearerToken.getToken();
+        options?.signal.throwIfAborted();
+        result = await this.requestApiResource(
+          cookieJar,
+          requestMethod,
+          requestPath,
+          upstreamHeaders,
+          requestBody,
+          workloadId,
+          publicOrigin,
+          token,
+          options,
+        );
+      }
+      if (options)
+        this.sessionBroker.saveCookieJar(frontendSessionId, session, cookieJar);
+      return result;
+    };
+    let response = await this.recorderRouting.run(
+      session,
+      method,
+      prepared.path,
+      prepared.body,
+      execute,
+      operationContext,
+    );
 
     response = this.gvui.completeApiRequest(session, workloadId, prepared, response);
     this.captureAmppUserId(session, upstreamPath, response);
@@ -479,6 +517,7 @@ export class AmppProxyService {
     workloadId: string,
     publicOrigin: string,
     token: string,
+    options?: RecorderRequestOptions,
   ): Promise<AmppCookieHttpResponse> {
     return this.http.request(cookieJar, upstreamPath, {
       method: method as Method,
@@ -490,6 +529,7 @@ export class AmppProxyService {
         token,
       ),
       data: body,
+      ...options,
     });
   }
 

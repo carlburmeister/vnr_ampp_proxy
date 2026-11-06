@@ -1,4 +1,9 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import type { SessionData } from 'express-session';
 
@@ -39,6 +44,20 @@ export class AmppProxySessionService {
 
   snapshot(session: SessionData): AmppProxySessionSnapshot {
     return { values: this.cloneValues(session) };
+  }
+
+  async assertAuthorizationCurrent(req: Request): Promise<void> {
+    const latest = await this.getStoredSession(req);
+    if (!latest?.user || latest.user.id !== req.session.user?.id) {
+      throw new UnauthorizedException('Recorder session is no longer active');
+    }
+    if (
+      latest.authorizationFingerprint !== req.session.authorizationFingerprint
+    ) {
+      throw new ForbiddenException(
+        'Recorder permissions changed; reopen the recorder',
+      );
+    }
   }
 
   async saveIfChanged(

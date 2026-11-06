@@ -16,6 +16,7 @@ import { AmppProxyService } from './ampp-proxy.service';
 import { AmppProxySessionService } from './ampp-proxy-session.service';
 import { AmppSessionBrokerService } from './ampp-session-broker.service';
 import { AmppUtilityLoginService } from './ampp-utility-login.service';
+import { AmppRecorderRoutingService } from './ampp-recorder-routing.service';
 import { AmppWebSocketProxyService } from './ampp-websocket-proxy.service';
 
 @Module({
@@ -30,6 +31,7 @@ import { AmppWebSocketProxyService } from './ampp-websocket-proxy.service';
     AmppProxyPolicyService,
     AmppResponseRewriterService,
     AmppProxyService,
+    AmppRecorderRoutingService,
     AmppProxySessionService,
     AmppSessionBrokerService,
     AmppUtilityLoginService,

@@ -1,5 +1,9 @@
 # Clip Recorder subscription regression review
 
+This document covers the initial notification repair. The additional selected
+source workaround and its final validation are described in
+[the routing review](clip-recorder-routing-review.md).
+
 ## Scope and evidence before production changes
 
 Base: `404b4e52e7b076c50724b45e4c2c8bda0b8cfc9a` (main).

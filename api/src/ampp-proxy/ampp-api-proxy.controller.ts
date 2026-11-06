@@ -48,6 +48,12 @@ export class AmppApiProxyController {
       method === 'POST' &&
       /^\/notifications\/api\/v1\/mailbox\/?$/i.test(upstreamPath);
     let upstreamResponse: AmppBrowserResponse;
+    let recorderOperation = false;
+    const routingController = new AbortController();
+    const cancelRouting = () => {
+      if (!res.writableEnded) routingController.abort();
+    };
+    res.once('close', cancelRouting);
     try {
       const allowedPath = tracePhase('policy', () =>
         this.policy.assertApiAccess(
@@ -101,6 +107,20 @@ export class AmppApiProxyController {
           req.headers,
           body,
           this.getPublicOrigin(req),
+          {
+            signal: routingController.signal,
+            assertActive: async () => {
+              recorderOperation = true;
+              await this.proxySession.assertAuthorizationCurrent(req);
+              this.policy.assertApiAccess(
+                req.session,
+                workloadId,
+                method,
+                upstreamPath,
+                body,
+              );
+            },
+          },
         ),
       );
 
@@ -108,6 +128,10 @@ export class AmppApiProxyController {
         this.proxySession.saveIfChanged(req, sessionSnapshot),
       );
     } catch (error) {
+      // Retain token invalidation/cache updates on a failed recorder workflow.
+      // saveIfChanged still refuses revoked or deleted sessions.
+      if (recorderOperation)
+        await this.proxySession.saveIfChanged(req, sessionSnapshot);
       await this.pollRetry.complete(
         req.sessionID,
         workloadId,
@@ -118,6 +142,8 @@ export class AmppApiProxyController {
       );
       if (res.destroyed) return;
       throw error;
+    } finally {
+      res.off('close', cancelRouting);
     }
 
     if (

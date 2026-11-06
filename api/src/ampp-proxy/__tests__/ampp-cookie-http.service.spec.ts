@@ -24,6 +24,32 @@ describe('AmppCookieHttpService diagnostics', () => {
     expect(result.status).toBe(200);
   });
 
+  it('passes a recorder deadline and cancellation signal to the actual transport', async () => {
+    const controller = new AbortController();
+    request.mockResolvedValue({
+      status: 204,
+      headers: {},
+      data: Buffer.alloc(0),
+    });
+    const options = {
+      method: 'POST' as const,
+      timeout: 100,
+      signal: controller.signal,
+    };
+    await service.request(
+      jar,
+      '/cluster/matrix/api/v1/routing/requestroute',
+      options,
+    );
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'POST',
+        timeout: 100,
+        signal: controller.signal,
+      }),
+    );
+  });
+
   it('passes through upstream 502 rather than retrying a non-idempotent request', async () => {
     request.mockResolvedValue({ status: 502, headers: {}, data: Buffer.from('Bad Gateway') });
     const result = await service.request(jar, '/app/wrapper/main.bundle.js');

@@ -19,6 +19,8 @@ type AmppCookieHttpRequest = {
   headers?: Record<string, string>;
   data?: string | Buffer;
   followRedirects?: boolean;
+  signal?: AbortSignal;
+  timeout?: number;
 };
 
 @Injectable()
@@ -61,6 +63,10 @@ export class AmppCookieHttpService {
               maxRedirects: 0,
               responseType: 'arraybuffer',
               validateStatus: () => true,
+              ...(request.signal ? { signal: request.signal } : {}),
+              ...(request.timeout !== undefined
+                ? { timeout: request.timeout }
+                : {}),
             }),
           { upstreamMethod: method, upstreamPath: tracePath(url.pathname) },
         );
