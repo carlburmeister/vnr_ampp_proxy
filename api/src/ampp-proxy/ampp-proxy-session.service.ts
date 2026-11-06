@@ -1,4 +1,9 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import type { SessionData } from 'express-session';
 
@@ -22,6 +27,7 @@ const SESSION_KEYS = [
   'amppMatrixAccess',
   'amppDashboardMatrixAccess',
   'amppNotificationMailboxIds',
+  'amppRecorderIdsByWorkload',
   'gvuiMailboxes',
 ] as const;
 
@@ -38,6 +44,20 @@ export class AmppProxySessionService {
 
   snapshot(session: SessionData): AmppProxySessionSnapshot {
     return { values: this.cloneValues(session) };
+  }
+
+  async assertAuthorizationCurrent(req: Request): Promise<void> {
+    const latest = await this.getStoredSession(req);
+    if (!latest?.user || latest.user.id !== req.session.user?.id) {
+      throw new UnauthorizedException('Recorder session is no longer active');
+    }
+    if (
+      latest.authorizationFingerprint !== req.session.authorizationFingerprint
+    ) {
+      throw new ForbiddenException(
+        'Recorder permissions changed; reopen the recorder',
+      );
+    }
   }
 
   async saveIfChanged(
@@ -79,6 +99,7 @@ export class AmppProxySessionService {
             'gvuiMailboxes',
             'amppAllowedWorkloadIds', 'amppResourceWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
             'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
+            'amppRecorderIdsByWorkload',
           ] as const) {
             (req.session as any)[key] = this.clone<unknown>(latest[key]);
           }
@@ -143,6 +164,23 @@ export class AmppProxySessionService {
             snapshot.values.amppNotificationMailboxIds,
             current.amppNotificationMailboxIds,
           );
+        }
+
+        if (changedKeys.includes('amppRecorderIdsByWorkload')) {
+          const before = snapshot.values.amppRecorderIdsByWorkload ?? {};
+          const after = current.amppRecorderIdsByWorkload ?? {};
+          const merged = { ...latest.amppRecorderIdsByWorkload };
+          for (const id of new Set([
+            ...Object.keys(before),
+            ...Object.keys(after),
+          ])) {
+            // Merge independent workloads without restoring an association that
+            // another request has already replaced or removed.
+            if (before[id] === after[id] || merged[id] !== before[id]) continue;
+            if (after[id] === undefined) delete merged[id];
+            else merged[id] = after[id];
+          }
+          req.session.amppRecorderIdsByWorkload = merged;
         }
 
         if (changedKeys.includes('gvuiMailboxes')) {

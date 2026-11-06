@@ -95,6 +95,70 @@ describe('AMPP bearer routing across OAuth renewals', () => {
       'https://proxy.invalid',
     );
   }
+
+  it.each([
+    ['authorized Recorder', 'GV.AMPP.Apps.Recorder', WORKLOADS[0], false, true],
+    [
+      'authorized child Recorder',
+      'GV.AMPP.Apps.Recorder',
+      WORKLOADS[0],
+      true,
+      true,
+    ],
+    ['another application', 'GV.AMPP.Apps.Player', WORKLOADS[0], false, false],
+    ['unknown application', undefined, WORKLOADS[0], false, false],
+    ['wrapper page', 'GV.AMPP.Apps.Recorder', undefined, false, false],
+    ['different workload', 'GV.AMPP.Apps.Recorder', WORKLOADS[1], false, false],
+  ])(
+    'scopes source scroll correction: %s',
+    async (_name, packageName, targetId, child, expected) => {
+      const workload = {
+        id: WORKLOADS[0],
+        name: 'Recorder',
+        is_parent: 0 as const,
+        pageType: 'ampp-ui' as const,
+        packageName,
+      };
+      session.allowedWorkloads = child
+        ? [
+            {
+              id: WORKLOADS[2],
+              name: 'Parent',
+              is_parent: 1,
+              pageType: 'ampp-ui',
+              child_workloads: [
+                {
+                  ...workload,
+                  applicationName: 'Recorder',
+                  fabricId: 'fabric',
+                  nodeId: 'node',
+                },
+              ],
+            },
+          ]
+        : [workload];
+      const path = targetId
+        ? `/mocha/application/${targetId}/embedded/`
+        : '/app/wrapper/';
+      request.mockResolvedValueOnce({
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+        body: Buffer.from('<html><head></head><body></body></html>'),
+        url: PLATFORM + path,
+      });
+      const result = await proxy.getUiResource(
+        'sid',
+        session,
+        WORKLOADS[0],
+        path,
+        {},
+        'https://proxy.invalid',
+      );
+      expect(
+        result.body.toString().includes('data-ampp-recorder-input-scroll'),
+      ).toBe(expected);
+    },
+  );
   async function api(
     path = '/cluster/state/api/v1/workload/' + WORKLOADS[0],
     method = 'GET',
