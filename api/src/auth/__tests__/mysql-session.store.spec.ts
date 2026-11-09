@@ -41,6 +41,7 @@ describe('MysqlSessionStore expiry and revocation', () => {
   afterEach(async () => {
     await store.close();
     jest.useRealTimers();
+    jest.restoreAllMocks();
   });
 
   it('deletes an encountered expired row without deleting a concurrent renewal', async () => {
@@ -82,7 +83,15 @@ describe('MysqlSessionStore expiry and revocation', () => {
     await store.create('new-login', data());
     expect(execute).toHaveBeenCalledWith(
       expect.stringMatching(/^INSERT INTO user_sessions.*VALUES/s),
-      ['new-login', expect.any(Number), expect.any(String)],
+      [
+        'new-login',
+        expect.any(Number),
+        expect.any(String),
+        null,
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+      ],
     );
   });
 
@@ -93,6 +102,89 @@ describe('MysqlSessionStore expiry and revocation', () => {
     expect(params[0]).toBeGreaterThanOrEqual(before + SESSION_MAX_AGE);
     expect(params[0]).toBeLessThanOrEqual(Date.now() + SESSION_MAX_AGE);
   });
+
+  const authenticated = () =>
+    ({ ...data(), user: { id: '42' } }) as session.SessionData;
+
+  it.each(['recordContact', 'recordActivity'] as const)(
+    '%s uses server time and conditional monotonic metadata SQL only',
+    async (method) => {
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      await store[method]('sid', authenticated());
+      const [sql, params] = execute.mock.calls[0];
+      expect(sql).toMatch(
+        /GREATEST\(COALESCE\(last_(?:seen_at|active_time), 0\), \?\)/,
+      );
+      expect(sql).toContain('WHERE session_id = ? AND expires_at > ?');
+      expect(sql).not.toMatch(/SET expires_at|data =|INSERT|UPSERT/);
+      expect(params).toEqual([now, 'sid', now, now - 30000]);
+    },
+  );
+
+  it('carries bigint metadata through session creation without serializing it into JSON', async () => {
+    const now = Date.now();
+    execute.mockResolvedValueOnce([
+      [
+        {
+          data: JSON.stringify(authenticated()),
+          expires_at: now + SESSION_MAX_AGE,
+          last_seen_at: String(now),
+          last_active_time: String(now),
+        },
+      ],
+    ]);
+    const loaded = await get('sid');
+    const request = {} as never;
+    const live = store.createSession(request, loaded);
+    execute.mockClear();
+    await store.recordContact('sid', live);
+    await store.recordActivity('sid', live);
+    expect(execute).not.toHaveBeenCalled();
+    expect(JSON.stringify(live)).not.toMatch(/last_seen_at|last_active_time/);
+  });
+
+  it.each(['recordContact', 'recordActivity'] as const)(
+    '%s rechecks a throttled write and rejects a deleted session',
+    async (method) => {
+      execute
+        .mockResolvedValueOnce([{ affectedRows: 0 }])
+        .mockResolvedValueOnce([[]]);
+      await expect(
+        store[method]('revoked', authenticated()),
+      ).rejects.toBeInstanceOf(SessionExpiredError);
+      expect(execute.mock.calls[1][0]).toContain('SELECT expires_at');
+    },
+  );
+
+  it.each(['recordContact', 'recordActivity'] as const)(
+    '%s accepts a write already performed by another process',
+    async (method) => {
+      execute
+        .mockResolvedValueOnce([{ affectedRows: 0 }])
+        .mockResolvedValueOnce([
+          [{ expires_at: Date.now() + SESSION_MAX_AGE }],
+        ]);
+      await expect(
+        store[method]('live', authenticated()),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it.each(['recordContact', 'recordActivity'] as const)(
+    '%s rejects unauthenticated or expired snapshots before writing',
+    async (method) => {
+      await expect(store[method]('anonymous', data())).rejects.toBeInstanceOf(
+        SessionExpiredError,
+      );
+      const expired = authenticated();
+      expired.cookie.expires = new Date(Date.now() - 1);
+      await expect(store[method]('expired', expired)).rejects.toBeInstanceOf(
+        SessionExpiredError,
+      );
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
 
   it('cleans abandoned sessions periodically in bounded batches and stops on close', async () => {
     await store.close();

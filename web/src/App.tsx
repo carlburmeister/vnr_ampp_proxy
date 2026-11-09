@@ -6,6 +6,7 @@ import { UserHomePage } from './components/UserHomePage';
 import { renderWorkloadApplicationRoute } from './utils/workloadApplicationRoutes';
 import { logoutUser } from './services/authApi';
 import { getCurrentSession, type SessionData } from './services/amppSessionApi';
+import { useSessionActivity } from './hooks/useSessionActivity';
 
 function App() {
   
@@ -16,6 +17,7 @@ function App() {
   const [currentSession, setCurrentSession] = useState<SessionData | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [authError, setAuthError] = useState('');
+  useSessionActivity(currentSession !== null && !authError);
 
   const invalidateRequests = useCallback(() => {
     sessionGeneration.current += 1;

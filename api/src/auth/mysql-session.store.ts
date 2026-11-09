@@ -19,10 +19,18 @@ export type MysqlSessionStoreOptions = {
 };
 
 export const DEFAULT_SESSION_TOUCH_INTERVAL_MS = 60000;
+export const SESSION_METADATA_INTERVAL_MS = 30000;
+
+type BrowserContact = {
+  last_seen_at: number | null;
+  last_active_time: number | null;
+};
 
 type SessionRow = RowDataPacket & {
   data: string;
   expires_at: number;
+  last_seen_at: number | string | null;
+  last_active_time: number | string | null;
 };
 
 export class SessionExpiredError extends Error {
@@ -37,6 +45,12 @@ export class MysqlSessionStore extends session.Store {
   private readonly ready: Promise<void>;
   private readonly cleanupTimer: NodeJS.Timeout;
   private cleaning = false;
+  // Request-local hints avoid extra SQL within the interval. Conditional SQL
+  // remains authoritative when different tabs or API processes race.
+  private readonly browserContact = new WeakMap<
+    session.SessionData,
+    BrowserContact
+  >();
   private readonly completedPolls = new WeakMap<
     session.SessionData,
     { sid: string; expiresAt: number }
@@ -93,6 +107,8 @@ export class MysqlSessionStore extends session.Store {
 
   createSession(req: Request, data: session.SessionData) {
     const loaded = super.createSession(req, data);
+    const contact = this.browserContact.get(data);
+    if (contact) this.browserContact.set(loaded, contact);
     this.confirmExpiry(loaded, this.getExpiresAt(loaded));
     return loaded;
   }
@@ -109,7 +125,7 @@ export class MysqlSessionStore extends session.Store {
       await this.ready;
 
       const [rows] = await this.pool.execute<SessionRow[]>(
-        `SELECT data, expires_at
+        `SELECT data, expires_at, last_seen_at, last_active_time
          FROM user_sessions
          WHERE session_id = ? AND expires_at > ?
          LIMIT 1`,
@@ -127,6 +143,14 @@ export class MysqlSessionStore extends session.Store {
       }
 
       const data = JSON.parse(rows[0].data) as session.SessionData;
+      this.browserContact.set(data, {
+        last_seen_at:
+          rows[0].last_seen_at == null ? null : Number(rows[0].last_seen_at),
+        last_active_time:
+          rows[0].last_active_time == null
+            ? null
+            : Number(rows[0].last_active_time),
+      });
       // touch() renews the indexed deadline without rewriting the JSON blob.
       data.cookie.expires = new Date(Number(rows[0].expires_at));
       callback(null, data);
@@ -185,14 +209,66 @@ export class MysqlSessionStore extends session.Store {
     return this.persistCurrentPoll(sid, data, false);
   }
 
-  async create(sid: string, sessionData: session.SessionData) {
+  async create(
+    sid: string,
+    sessionData: session.SessionData,
+    ipAddress: string | null = null,
+  ) {
     await this.ready;
     const expiresAt = this.getExpiresAt(sessionData);
+    const now = Date.now();
     await this.pool.execute<ResultSetHeader>(
-      `INSERT INTO user_sessions (session_id, expires_at, data) VALUES (?, ?, ?)`,
-      [sid, expiresAt, JSON.stringify(sessionData)],
+      `INSERT INTO user_sessions
+       (session_id, expires_at, data, ip_address, started_at, last_active_time, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [sid, expiresAt, JSON.stringify(sessionData), ipAddress, now, now, now],
     );
+    this.browserContact.set(sessionData, {
+      last_seen_at: now,
+      last_active_time: now,
+    });
     this.confirmExpiry(sessionData, expiresAt);
+  }
+
+  recordContact(sid: string, data: session.SessionData): Promise<void> {
+    return this.recordBrowserTime(sid, data, 'last_seen_at');
+  }
+
+  recordActivity(sid: string, data: session.SessionData): Promise<void> {
+    return this.recordBrowserTime(sid, data, 'last_active_time');
+  }
+
+  private async recordBrowserTime(
+    sid: string,
+    data: session.SessionData,
+    column: keyof BrowserContact,
+  ): Promise<void> {
+    await this.ready;
+    const now = Date.now();
+    if (!data.user || this.getExpiresAt(data) <= now)
+      throw new SessionExpiredError();
+    const contact = this.browserContact.get(data);
+    if (
+      contact?.[column] != null &&
+      now - contact[column] < SESSION_METADATA_INTERVAL_MS
+    )
+      return;
+    // column is selected exclusively from the two literal names above.
+    const [result] = await this.pool.execute<ResultSetHeader>(
+      `UPDATE user_sessions
+       SET ${column} = GREATEST(COALESCE(${column}, 0), ?)
+       WHERE session_id = ? AND expires_at > ?
+         AND (${column} IS NULL OR ${column} <= ?)`,
+      [now, sid, now, now - SESSION_METADATA_INTERVAL_MS],
+    );
+    // Zero rows can mean another process already recorded contact. Recheck
+    // existence/expiry so throttling never disguises logout or revocation.
+    if (!result.affectedRows) await this.readExpiry(sid);
+    this.browserContact.set(data, {
+      last_seen_at: contact?.last_seen_at ?? null,
+      last_active_time: contact?.last_active_time ?? null,
+      [column]: Math.max(contact?.[column] ?? 0, now),
+    });
   }
 
   async destroy(sid: string, callback?: (error?: any) => void) {
@@ -309,6 +385,10 @@ export class MysqlSessionStore extends session.Store {
         session_id VARCHAR(128) NOT NULL PRIMARY KEY,
         expires_at BIGINT UNSIGNED NOT NULL,
         data LONGTEXT NOT NULL,
+        ip_address VARCHAR(45) NULL DEFAULT NULL,
+        started_at BIGINT UNSIGNED NULL DEFAULT NULL,
+        last_active_time BIGINT UNSIGNED NULL DEFAULT NULL,
+        last_seen_at BIGINT UNSIGNED NULL DEFAULT NULL,
         INDEX idx_user_sessions_expires_at (expires_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
     );

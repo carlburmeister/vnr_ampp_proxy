@@ -135,7 +135,7 @@ function browser(
     window,
     document,
     history,
-    console: { info },
+    console: { info, warn: jest.fn() },
     URL,
     Request,
     Error: StackError,

@@ -5,6 +5,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from '../auth/auth.service';
+import {
+  MysqlSessionStore,
+  SessionExpiredError,
+} from '../auth/mysql-session.store';
 import type { Request, RequestHandler, Response } from 'express';
 import type { SessionData } from 'express-session';
 import {
@@ -175,6 +179,18 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     });
   };
 
+  private async recordBrowserContact(request: UpgradeRequest): Promise<void> {
+    if (
+      request.session?.user &&
+      request.sessionID &&
+      request.sessionStore instanceof MysqlSessionStore
+    )
+      await request.sessionStore.recordContact(
+        request.sessionID,
+        request.session,
+      );
+  }
+
   private async authorizeUpgrade(
     request: UpgradeRequest,
     parsedRequest: ParsedProxyRequest,
@@ -186,6 +202,13 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     }
 
     await this.auth.refreshSessionAuthorization(request.session);
+    try {
+      await this.recordBrowserContact(request);
+    } catch (error) {
+      if (error instanceof SessionExpiredError)
+        throw new HttpException('Login required', 401);
+      throw error;
+    }
     return tracePhase('policy', () =>
       this.policy.assertWebSocketAccess(
         request.session,
@@ -205,6 +228,7 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     let pendingBytes = 0;
     let upstream: WebSocketConnection | undefined;
     let browserClosed = false;
+    let contactPending = false;
     // TEMP AMPP trace: share one callback across relays; never inspect payloads.
     const traceRelayFailure = () =>
       traceSocketClose(request, 'proxy', undefined, 'Relay failed');
@@ -250,6 +274,21 @@ export class AmppWebSocketProxyService implements OnModuleDestroy {
     });
 
     browser.on('message', (data: WebSocketData) => {
+      // Browser messages establish contact, never user interaction or renewal.
+      // Keep relay ordering and buffering independent of metadata persistence.
+      if (!contactPending) {
+        contactPending = true;
+        void this.recordBrowserContact(request)
+          .catch(() =>
+            amppProxySessionDebugWarn(
+              'Unable to record browser contact',
+              request.sessionID,
+            ),
+          )
+          .finally(() => {
+            contactPending = false;
+          });
+      }
       const isBinary = typeof data !== 'string';
       if (this.gvui && request.session) {
         const filtered = this.matrixFilter.filterWebSocketMessage(request.session, workloadId, this.toBuffer(data),

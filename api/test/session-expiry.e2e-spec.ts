@@ -26,7 +26,12 @@ import { AmppSessionController } from '../src/ampp/controllers/ampp-session.cont
 
 jest.mock('mysql2/promise', () => ({ createPool: jest.fn() }));
 
-type SessionRow = { expires_at: number; data: string };
+type SessionRow = {
+  expires_at: number;
+  data: string;
+  last_seen_at?: number | null;
+  last_active_time?: number | null;
+};
 type SqlResult = [{ affectedRows: number }] | [SessionRow[]];
 
 @Controller('session-compatibility')
@@ -84,6 +89,8 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
         rows.set(String(params[0]), {
           expires_at: Number(params[1]),
           data: String(params[2]),
+          last_seen_at: Number(params[6]),
+          last_active_time: Number(params[5]),
         });
         return [{ affectedRows: 1 }];
       }
@@ -103,6 +110,19 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
         return [{ affectedRows: count }];
       }
       if (sql.startsWith('UPDATE')) {
+        const metadata = sql.match(/SET (last_seen_at|last_active_time) =/);
+        if (metadata) {
+          const row = rows.get(String(params[1]));
+          const column = metadata[1] as 'last_seen_at' | 'last_active_time';
+          if (
+            !row ||
+            row.expires_at <= Number(params[2]) ||
+            (row[column] != null && row[column] > Number(params[3]))
+          )
+            return [{ affectedRows: 0 }];
+          row[column] = Math.max(row[column] ?? 0, Number(params[0]));
+          return [{ affectedRows: 1 }];
+        }
         const hasData = sql.includes('data = ?');
         const row = rows.get(String(params[hasData ? 2 : 1]));
         if (!row || row.expires_at <= Number(params[hasData ? 3 : 2]))
@@ -184,7 +204,10 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
   }
 
   const updates = () =>
-    execute.mock.calls.filter(([sql]: [string]) => sql.startsWith('UPDATE'));
+    execute.mock.calls.filter(
+      ([sql]: [string]) =>
+        sql.startsWith('UPDATE') && sql.includes('SET expires_at'),
+    );
   const storedData = () =>
     JSON.parse([...rows.values()][0].data) as session.SessionData;
 
@@ -366,9 +389,9 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
 
   // These budget assertions intentionally fail on unchanged main; run them
   // separately from compatibility tests to record the measured improvement.
-  describe('current-session write budget', () => {
+  describe('current-session renewal write budget', () => {
     it.each([false, true])(
-      'uses one UPDATE when authorization refresh is %s',
+      'uses one renewal UPDATE when authorization refresh is %s',
       async (changed) => {
         const cookie = await login();
         const now = Date.now() + 60000;

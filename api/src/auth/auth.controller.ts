@@ -17,8 +17,9 @@ import { AuthService } from './auth.service';
 import {
   PersistSessionInController,
   SessionAuthGuard,
+  rejectExpiredSession,
 } from './session-auth.guard';
-import { MysqlSessionStore } from './mysql-session.store';
+import { MysqlSessionStore, SessionExpiredError } from './mysql-session.store';
 import { clearSessionCookie } from './session-cookie';
 
 @Controller('auth')
@@ -59,7 +60,7 @@ export class AuthController {
     const store = req.sessionStore;
     if (!(store instanceof MysqlSessionStore))
       throw new Error('Login requires MysqlSessionStore');
-    await store.create(req.sessionID, req.session);
+    await store.create(req.sessionID, req.session, req.ip ?? null);
 
     await new Promise<void>((resolve, reject) => {
       req.session.save((error) => {
@@ -86,6 +87,26 @@ export class AuthController {
     }
 
     return { user: req.session.user };
+  }
+  /*-------------------------------------------------------------*/
+  //  activity()
+  /*-------------------------------------------------------------*/
+  @Post('activity')
+  @UseGuards(SessionAuthGuard)
+  @HttpCode(204)
+  async activity(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!(req.sessionStore instanceof MysqlSessionStore))
+      throw new Error('Session activity requires MysqlSessionStore');
+    try {
+      await req.sessionStore.recordActivity(req.sessionID, req.session);
+    } catch (error) {
+      if (!(error instanceof SessionExpiredError)) throw error;
+      return rejectExpiredSession(req, res, this.config);
+    }
   }
   /*-------------------------------------------------------------*/
   //  logout()
