@@ -76,11 +76,13 @@ test('an expired poll cannot be undone by a late permissions-refresh response', 
 
 test('logout immediately hides controls and rejects late responses; a fresh login still works', async (t) => {
   const app = await signedIn(t);
+  assert.equal(app.activityStates.at(-1), true);
   app.poll();
   const stale = app.requests.at(-1)!;
   const logout = app.find('UserHomePage').props.onLogout();
   await app.flush();
   assert.equal(app.find('UserHomePage'), undefined);
+  assert.equal(app.activityStates.at(-1), false);
   stale.resolve(session());
   await app.flush();
   assert.equal(app.find('UserHomePage'), undefined);
@@ -92,6 +94,7 @@ test('logout immediately hides controls and rejects late responses; a fresh logi
   await login;
   await app.flush();
   assert.ok(app.find('UserHomePage'));
+  assert.equal(app.activityStates.at(-1), true);
 });
 
 test('the known deadline triggers revalidation rather than assuming another tab did not renew', async (t) => {

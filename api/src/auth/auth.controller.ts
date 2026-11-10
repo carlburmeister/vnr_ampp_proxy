@@ -17,8 +17,9 @@ import { AuthService } from './auth.service';
 import {
   PersistSessionInController,
   SessionAuthGuard,
+  rejectExpiredSession,
 } from './session-auth.guard';
-import { MysqlSessionStore } from './mysql-session.store';
+import { MysqlSessionStore, SessionExpiredError } from './mysql-session.store';
 import { clearSessionCookie } from './session-cookie';
 
 @Controller('auth')
@@ -38,6 +39,10 @@ export class AuthController {
   async login(@Req() req: Request, @Body() body: LoginDto) {
     
     const result = await this.auth.login(body.username, body.password);
+    const store = req.sessionStore;
+    if (!(store instanceof MysqlSessionStore))
+      throw new Error('Login requires MysqlSessionStore');
+    await store.endSession(req.sessionID, 'replaced');
 
     // Prevent session fixation: issue a fresh server-side session ID after
     // credentials are validated, then store trusted server-side data in it.
@@ -56,10 +61,7 @@ export class AuthController {
 
     // Only a successful login may create a row. Ordinary saves must never
     // recreate a session removed by logout, revocation, or expiry.
-    const store = req.sessionStore;
-    if (!(store instanceof MysqlSessionStore))
-      throw new Error('Login requires MysqlSessionStore');
-    await store.create(req.sessionID, req.session);
+    await store.create(req.sessionID, req.session, req.ip ?? null);
 
     await new Promise<void>((resolve, reject) => {
       req.session.save((error) => {
@@ -88,13 +90,36 @@ export class AuthController {
     return { user: req.session.user };
   }
   /*-------------------------------------------------------------*/
+  //  activity()
+  /*-------------------------------------------------------------*/
+  @Post('activity')
+  @UseGuards(SessionAuthGuard)
+  @HttpCode(204)
+  async activity(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!(req.sessionStore instanceof MysqlSessionStore))
+      throw new Error('Session activity requires MysqlSessionStore');
+    try {
+      await req.sessionStore.recordActivity(req.sessionID, req.session);
+    } catch (error) {
+      if (!(error instanceof SessionExpiredError)) throw error;
+      return rejectExpiredSession(req, res, this.config);
+    }
+  }
+  /*-------------------------------------------------------------*/
   //  logout()
   /*-------------------------------------------------------------*/ 
   @Post('logout')
   // Sign-out owns deletion, including an already-revoked previous session.
+  // The live request session is deleted; its ended audit row remains stored.
   @PersistSessionInController(true)
   @HttpCode(204)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    if (req.sessionStore instanceof MysqlSessionStore)
+      await req.sessionStore.endSession(req.sessionID, 'logout');
     
     await new Promise<void>((resolve, reject) => {
       req.session.destroy((error) => {

@@ -41,14 +41,24 @@ describe('MysqlSessionStore expiry and revocation', () => {
   afterEach(async () => {
     await store.close();
     jest.useRealTimers();
+    jest.restoreAllMocks();
   });
 
-  it('deletes an encountered expired row without deleting a concurrent renewal', async () => {
+  it('ends an encountered expired row without ending a concurrent renewal', async () => {
     execute.mockResolvedValueOnce([[]]);
     expect(await get('expired')).toBeNull();
     expect(execute).toHaveBeenLastCalledWith(
-      expect.stringMatching(/DELETE.*session_id = \? AND expires_at <= \?/s),
-      ['expired', expect.any(Number)],
+      expect.stringMatching(
+        /UPDATE.*session_id = \? AND ended_at IS NULL AND expires_at <= \?/s,
+      ),
+      [
+        expect.any(Number),
+        expect.any(Number),
+        'expired',
+        expect.any(Number),
+        'expired',
+        expect.any(Number),
+      ],
     );
   });
 
@@ -82,7 +92,15 @@ describe('MysqlSessionStore expiry and revocation', () => {
     await store.create('new-login', data());
     expect(execute).toHaveBeenCalledWith(
       expect.stringMatching(/^INSERT INTO user_sessions.*VALUES/s),
-      ['new-login', expect.any(Number), expect.any(String)],
+      [
+        'new-login',
+        expect.any(Number),
+        expect.any(String),
+        null,
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+      ],
     );
   });
 
@@ -94,6 +112,133 @@ describe('MysqlSessionStore expiry and revocation', () => {
     expect(params[0]).toBeLessThanOrEqual(Date.now() + SESSION_MAX_AGE);
   });
 
+  const authenticated = () =>
+    ({ ...data(), user: { id: '42' } }) as session.SessionData;
+
+  it.each(['recordContact', 'recordActivity'] as const)(
+    '%s uses server time and conditional monotonic metadata SQL only',
+    async (method) => {
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      await store[method]('sid', authenticated());
+      const [sql, params] = execute.mock.calls[0];
+      expect(sql).toMatch(
+        /GREATEST\(COALESCE\(last_(?:seen_at|active_time), 0\), \?\)/,
+      );
+      expect(sql).toContain('WHERE session_id = ? AND expires_at > ?');
+      expect(sql).not.toMatch(/SET expires_at|data =|INSERT|UPSERT/);
+      expect(params).toEqual([now, 'sid', now, now - 30000]);
+    },
+  );
+
+  it('carries bigint metadata through session creation without serializing it into JSON', async () => {
+    const now = Date.now();
+    execute.mockResolvedValueOnce([
+      [
+        {
+          data: JSON.stringify(authenticated()),
+          expires_at: now + SESSION_MAX_AGE,
+          last_seen_at: String(now),
+          last_active_time: String(now),
+        },
+      ],
+    ]);
+    const loaded = await get('sid');
+    const request = {} as never;
+    const live = store.createSession(request, loaded);
+    execute.mockClear();
+    await store.recordContact('sid', live);
+    await store.recordActivity('sid', live);
+    expect(execute).not.toHaveBeenCalled();
+    expect(JSON.stringify(live)).not.toMatch(/last_seen_at|last_active_time/);
+  });
+
+  it.each(['recordContact', 'recordActivity'] as const)(
+    '%s rechecks a throttled write and rejects a deleted session',
+    async (method) => {
+      execute
+        .mockResolvedValueOnce([{ affectedRows: 0 }])
+        .mockResolvedValueOnce([[]]);
+      await expect(
+        store[method]('revoked', authenticated()),
+      ).rejects.toBeInstanceOf(SessionExpiredError);
+      expect(execute.mock.calls[1][0]).toContain('SELECT expires_at');
+    },
+  );
+
+  it.each(['recordContact', 'recordActivity'] as const)(
+    '%s accepts a write already performed by another process',
+    async (method) => {
+      execute
+        .mockResolvedValueOnce([{ affectedRows: 0 }])
+        .mockResolvedValueOnce([
+          [{ expires_at: Date.now() + SESSION_MAX_AGE }],
+        ]);
+      await expect(
+        store[method]('live', authenticated()),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it.each(['recordContact', 'recordActivity'] as const)(
+    '%s rejects unauthenticated or expired snapshots before writing',
+    async (method) => {
+      await expect(store[method]('anonymous', data())).rejects.toBeInstanceOf(
+        SessionExpiredError,
+      );
+      const expired = authenticated();
+      expired.cookie.expires = new Date(Date.now() - 1);
+      await expect(store[method]('expired', expired)).rejects.toBeInstanceOf(
+        SessionExpiredError,
+      );
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['logout', 'revoked', 'replaced', 'expired'] as const)(
+    'terminates %s atomically without overwriting an earlier end',
+    async (reason) => {
+      await store.endSession('sid', reason);
+      const [sql, params] = execute.mock.calls[0];
+      expect(sql).toContain('ended_at = LEAST(expires_at, ?)');
+      expect(sql).toContain(
+        "CASE WHEN expires_at <= ? THEN 'expired' ELSE ? END",
+      );
+      expect(sql).toContain('WHERE session_id = ? AND ended_at IS NULL');
+      expect(sql).toContain('JSON_VALID(data)');
+      expect(sql).toContain('$.audit.userId');
+      expect(sql).toContain('$.user.id');
+      expect(sql).not.toMatch(/DELETE|INSERT|amppAccess|amppCookie/);
+      expect(params[2]).toBe(reason);
+      expect(params[4]).toBe('sid');
+      expect(sql.includes('AND expires_at <= ?')).toBe(reason === 'expired');
+    },
+  );
+
+  it('captures immutable identity at login without copying credentials', async () => {
+    const login = {
+      ...data(),
+      user: {
+        id: '42',
+        username: 'original',
+        displayName: 'Original client',
+        clientId: 7,
+        userType: 'user' as const,
+      },
+      amppAccessToken: 'SECRET',
+    } as session.SessionData;
+    await store.create('sid', login);
+    login.user.username = 'renamed';
+    expect(login.audit).toEqual({
+      userId: '42',
+      username: 'original',
+      displayName: 'Original client',
+      clientId: 7,
+      userType: 'user',
+    });
+    expect(JSON.stringify(login.audit)).not.toContain('SECRET');
+  });
+
   it('cleans abandoned sessions periodically in bounded batches and stops on close', async () => {
     await store.close();
     jest.useFakeTimers();
@@ -103,7 +248,9 @@ describe('MysqlSessionStore expiry and revocation', () => {
     execute.mockClear();
     await jest.advanceTimersByTimeAsync(60000);
     expect(execute).toHaveBeenCalledWith(
-      'DELETE FROM user_sessions WHERE expires_at <= ? LIMIT 1000',
+      expect.stringMatching(
+        /UPDATE.*ended_at = expires_at.*WHERE ended_at IS NULL AND expires_at <= \? LIMIT 1000/s,
+      ),
       [expect.any(Number)],
     );
     await store.close();

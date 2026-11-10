@@ -5,6 +5,7 @@ import {
   Req,
   Res,
   UseGuards,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
@@ -27,10 +28,19 @@ import { AmppApiProxyController } from '../src/ampp-proxy/ampp-api-proxy.control
 import { AmppProxyPolicyService } from '../src/ampp-proxy/ampp-proxy-policy.service';
 import { AmppProxyService } from '../src/ampp-proxy/ampp-proxy.service';
 import { AmppProxySessionService } from '../src/ampp-proxy/ampp-proxy-session.service';
+import {
+  applySessionEnding,
+  type RetainedSessionRow,
+} from './helpers/session-retention-fixture';
 
 jest.mock('mysql2/promise', () => ({ createPool: jest.fn() }));
 
-type Row = { expires_at: number; data: string };
+type Row = RetainedSessionRow & {
+  ip_address?: string | null;
+  started_at?: number | null;
+  last_active_time?: number | null;
+  last_seen_at?: number | null;
+};
 type Params = (string | number)[];
 type Result = [{ affectedRows: number }] | [Row[]];
 type Statement = { sql: string; params: Params; affectedRows?: number };
@@ -236,23 +246,50 @@ describe('Session renewal', () => {
     refresh.mockReset().mockResolvedValue(false);
     const query = (sql: string, params: Params): Result => {
       if (sql.startsWith('CREATE')) return [{ affectedRows: 0 }];
+      const ending = applySessionEnding(sql, params, rows);
+      if (ending) return [ending];
       if (sql.startsWith('SELECT')) {
         const row = rows.get(String(params[0]));
-        return [row && row.expires_at > Number(params[1]) ? [{ ...row }] : []];
+        return [
+          row && row.ended_at == null && row.expires_at > Number(params[1])
+            ? [{ ...row }]
+            : [],
+        ];
       }
       if (sql.startsWith('INSERT')) {
         if (rows.has(String(params[0]))) throw new Error('Duplicate session');
         rows.set(String(params[0]), {
           expires_at: Number(params[1]),
           data: String(params[2]),
+          ip_address: String(params[3]),
+          started_at: Number(params[4]),
+          last_active_time: Number(params[5]),
+          last_seen_at: Number(params[6]),
+          ended_at: null,
+          end_reason: null,
         });
         return [{ affectedRows: 1 }];
       }
       if (sql.startsWith('UPDATE')) {
+        const metadata = sql.match(/SET (last_seen_at|last_active_time) =/);
+        if (metadata) {
+          const row = rows.get(String(params[1]));
+          const column = metadata[1] as 'last_seen_at' | 'last_active_time';
+          if (
+            !row ||
+            row.ended_at != null ||
+            row.expires_at <= Number(params[2]) ||
+            (row[column] != null && row[column] > Number(params[3]))
+          )
+            return [{ affectedRows: 0 }];
+          row[column] = Math.max(row[column] ?? 0, Number(params[0]));
+          return [{ affectedRows: 1 }];
+        }
         const full = sql.includes('data = ?');
         const row = rows.get(String(params[full ? 2 : 1]));
         if (
           !row ||
+          row.ended_at != null ||
           row.expires_at <= Number(params[full ? 3 : 2]) ||
           (!full &&
             sql.includes('AND expires_at <= ?') &&
@@ -316,8 +353,16 @@ describe('Session renewal', () => {
     statements.length = 0;
     return response.headers['set-cookie'][0].split(';')[0];
   }
-  const updated = () => statements.filter((s) => s.sql.startsWith('UPDATE'));
-  const row = () => [...rows.values()][0];
+  // Renewal budgets remain unchanged; metadata has its own 30-second budget.
+  const updated = () =>
+    statements.filter(
+      (s) => s.sql.startsWith('UPDATE') && s.sql.includes('SET expires_at'),
+    );
+  const metadataUpdates = () =>
+    statements.filter((s) => /SET last_(seen_at|active_time) =/.test(s.sql));
+  const row = () =>
+    [...rows.values()].find((value) => value.ended_at == null) ??
+    [...rows.values()].at(-1);
   const stored = () => JSON.parse(row().data) as session.SessionData;
   const cookieDeadline = (response: request.Response) => {
     const cookies = response.headers['set-cookie'] as unknown as string[];
@@ -436,7 +481,8 @@ describe('Session renewal', () => {
         .post('/api/auth/logout')
         .set('Cookie', cookie)
         .expect(204);
-      expect(rows.size).toBe(0);
+      expect(rows.size).toBe(1);
+      expect(row()).toMatchObject({ ended_at: now, end_reason: 'logout' });
       await request(app.getHttpServer())
         .get('/api/ampp/session/current')
         .set('Cookie', cookie)
@@ -578,7 +624,11 @@ describe('Session renewal', () => {
       expect(response.text).toContain('second');
       expect(cookieDeadline(response)).toBeLessThanOrEqual(row().expires_at);
       expect(
-        statements.filter((s) => /^(SELECT|UPDATE)/.test(s.sql)).length,
+        statements.filter(
+          (s) =>
+            /^(SELECT|UPDATE)/.test(s.sql) &&
+            !/SET last_(seen_at|active_time) =/.test(s.sql),
+        ).length,
       ).toBeLessThanOrEqual(2);
     });
   });
@@ -656,12 +706,413 @@ describe('Session renewal', () => {
         .get('/api/renewal-fixture/read')
         .set('Cookie', cookie)
         .expect(401);
+      expect(rows.size).toBe(1);
+      expect(row().end_reason).toBe('expired');
+    });
+  });
+
+  describe('browser session metadata', () => {
+    it.each(['198.51.100.27', '2001:db8::42'])(
+      'captures trusted proxy IP %s and server login timestamps',
+      async (address) => {
+        const expressApp = app
+          .getHttpAdapter()
+          .getInstance() as import('express').Application;
+        expressApp.set('trust proxy', 1);
+        const response = await request(app.getHttpServer())
+          .post('/api/auth/login')
+          .set('X-Forwarded-For', `192.0.2.99, ${address}`)
+          .send({ username: 'test', password: 'mocked', started_at: 1 })
+          .expect(201);
+        expect(row()).toMatchObject({
+          ip_address: address,
+          started_at: now,
+          last_active_time: now,
+          last_seen_at: now,
+        });
+        expect(response.body).toEqual({ user });
+        expect(stored()).not.toHaveProperty('last_seen_at');
+      },
+    );
+
+    it('ignores forwarded IP headers when the application does not trust a proxy', async () => {
+      await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set('X-Forwarded-For', '192.0.2.99')
+        .send({ username: 'test', password: 'mocked' })
+        .expect(201);
+      expect(row().ip_address).not.toBe('192.0.2.99');
+    });
+
+    it('keeps idle FlowMonitor-style polls online without claiming user interaction', async () => {
+      const cookie = await login();
+      const startedAt = row().started_at;
+      for (const offset of [30000, 30000, 30000]) {
+        now += offset;
+        await request(app.getHttpServer())
+          .get('/api/ampp/session/current')
+          .set('Cookie', cookie)
+          .expect(200);
+        expect(row().last_seen_at).toBe(now);
+        expect(row().last_active_time).toBe(startedAt);
+        expect(row().started_at).toBe(startedAt);
+      }
+      expect(row().expires_at).toBeGreaterThan(now);
+      const response = await request(app.getHttpServer())
+        .post('/api/auth/activity')
+        .set('Cookie', cookie)
+        .send({ last_active_time: 1 })
+        .expect(204);
+      expect(response.text).toBe('');
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(row().last_active_time).toBe(now);
+      expect(row().started_at).toBe(startedAt);
+    });
+
+    it('does not write contact before 30 seconds and records it at the boundary', async () => {
+      const cookie = await login();
+      now += 29999;
+      await request(app.getHttpServer())
+        .get('/api/ampp/session/current')
+        .set('Cookie', cookie)
+        .expect(200);
+      expect(metadataUpdates()).toHaveLength(0);
+      now++;
+      await request(app.getHttpServer())
+        .get('/api/ampp/session/current')
+        .set('Cookie', cookie)
+        .expect(200);
+      expect(metadataUpdates().filter((s) => s.affectedRows)).toHaveLength(1);
+    });
+
+    it('allows one contact and activity write when two API instances race', async () => {
+      const second = await createApp();
+      const cookie = await login();
+      now += 30000;
+      let reads = 0;
+      let release: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      afterSql = async (sql) => {
+        if (sql.startsWith('SELECT data') && reads < 2) {
+          if (++reads === 2) release();
+          await gate;
+        }
+      };
+      await Promise.all(
+        [app, second].map((instance) =>
+          request(instance.getHttpServer())
+            .post('/api/auth/activity')
+            .set('Cookie', cookie)
+            .expect(204),
+        ),
+      );
+      const writes = metadataUpdates().filter((s) => s.affectedRows);
+      expect(
+        writes.filter((s) => s.sql.includes('SET last_seen_at')),
+      ).toHaveLength(1);
+      expect(
+        writes.filter((s) => s.sql.includes('SET last_active_time')),
+      ).toHaveLength(1);
+      expect(row().last_active_time).toBe(now);
+      expect(row().last_seen_at).toBe(now);
+      expect(updated()).toHaveLength(0);
+    });
+
+    it('preserves unknown historical login metadata while recording new contact/activity', async () => {
+      const cookie = await login();
+      Object.assign(row(), {
+        ip_address: null,
+        started_at: null,
+        last_seen_at: null,
+        last_active_time: null,
+      });
+      await request(app.getHttpServer())
+        .get('/api/ampp/session/current')
+        .set('Cookie', cookie)
+        .expect(200);
+      expect(row()).toMatchObject({
+        ip_address: null,
+        started_at: null,
+        last_seen_at: now,
+        last_active_time: null,
+      });
+      await request(app.getHttpServer())
+        .post('/api/auth/activity')
+        .set('Cookie', cookie)
+        .expect(204);
+      expect(row()).toMatchObject({
+        ip_address: null,
+        started_at: null,
+        last_active_time: now,
+      });
+    });
+
+    it('records browser contact before a proxied AMPP operation fails', async () => {
+      const cookie = await login();
+      const active = row().last_active_time;
+      now += 30000;
+      beforeFixtureReply = () => {
+        throw new Error('Mocked upstream failure');
+      };
+      await request(app.getHttpServer())
+        .get(`/api/ampp-proxy/api/${workloadId}/fixture`)
+        .set('Cookie', cookie)
+        .expect(500);
+      expect(row().last_seen_at).toBe(now);
+      expect(row().last_active_time).toBe(active);
+    });
+
+    it('recovers from a metadata database failure without revoking the session', async () => {
+      const cookie = await login();
+      now += 30000;
+      beforeSql = (sql) => {
+        if (sql.includes('SET last_seen_at'))
+          throw new Error('Mocked metadata failure');
+      };
+      await request(app.getHttpServer())
+        .get('/api/ampp/session/current')
+        .set('Cookie', cookie)
+        .expect(500);
+      expect(rows.size).toBe(1);
+      beforeSql = undefined;
+      await request(app.getHttpServer())
+        .get('/api/ampp/session/current')
+        .set('Cookie', cookie)
+        .expect(200);
+      expect(row().last_seen_at).toBe(now);
+    });
+
+    it('rejects activity for an expired session without changing its metadata', async () => {
+      const cookie = await login();
+      row().expires_at = now - 1;
+      await request(app.getHttpServer())
+        .post('/api/auth/activity')
+        .set('Cookie', cookie)
+        .expect(401);
+      expect(rows.size).toBe(1);
+      expect(row().end_reason).toBe('expired');
+      expect(metadataUpdates()).toHaveLength(0);
+    });
+
+    it('rejects a late activity update after logout/revocation without recreating a row', async () => {
+      const cookie = await login();
+      now += 30000;
+      beforeSql = (sql) => {
+        if (sql.includes('SET last_active_time')) rows.clear();
+      };
+      await request(app.getHttpServer())
+        .post('/api/auth/activity')
+        .set('Cookie', cookie)
+        .expect(401);
       expect(rows.size).toBe(0);
+      expect(statements.some((s) => s.sql.startsWith('INSERT'))).toBe(false);
+      await request(app.getHttpServer()).post('/api/auth/activity').expect(401);
+    });
+  });
+
+  describe('retained session audit history', () => {
+    it('keeps an existing session active when new login credentials fail', async () => {
+      const cookie = await login();
+      const before = { ...row() };
+      jest
+        .spyOn(app.get(AuthService), 'login')
+        .mockRejectedValueOnce(
+          new UnauthorizedException('Invalid credentials'),
+        );
+      await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set('Cookie', cookie)
+        .send({ username: 'test', password: 'wrong' })
+        .expect(401);
+      expect(row()).toEqual(before);
+      await request(app.getHttpServer())
+        .get('/api/ampp/session/current')
+        .set('Cookie', cookie)
+        .expect(200);
+    });
+
+    it('can retry a failed termination without losing the live session or its audit metadata', async () => {
+      const cookie = await login();
+      beforeSql = (sql) => {
+        if (sql.includes('ended_at = LEAST'))
+          throw new Error('Mocked ending failure');
+      };
+      await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .set('Cookie', cookie)
+        .expect(500);
+      expect(row().ended_at).toBeNull();
+      beforeSql = undefined;
+      await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .set('Cookie', cookie)
+        .expect(204);
+      expect(row().end_reason).toBe('logout');
+      expect(statements.some((s) => s.sql.startsWith('DELETE'))).toBe(false);
+    });
+
+    it('retains logout metadata and only the login identity snapshot', async () => {
+      const cookie = await login();
+      const historical = row();
+      const data = stored();
+      data.user = {
+        ...user,
+        username: 'renamed-user',
+        displayName: 'Renamed client',
+      };
+      data.amppAccessToken = 'AUDIT_SECRET';
+      data.amppCookieJar = { cookies: [{ value: 'AUDIT_SECRET' }] } as never;
+      historical.data = JSON.stringify(data);
+      const metadata = {
+        ip_address: historical.ip_address,
+        started_at: historical.started_at,
+        last_seen_at: historical.last_seen_at,
+        last_active_time: historical.last_active_time,
+      };
+      now += 1000;
+      await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .set('Cookie', cookie)
+        .expect(204);
+      expect(historical).toMatchObject({
+        ...metadata,
+        ended_at: now,
+        expires_at: now,
+        end_reason: 'logout',
+      });
+      expect(JSON.parse(historical.data)).toEqual({
+        audit: {
+          userId: user.id,
+          username: user.username,
+          displayName: user.displayName,
+          clientId: user.clientId,
+          userType: user.userType,
+        },
+      });
+      expect(historical.data).not.toContain('AUDIT_SECRET');
+      const final = { ...historical };
+      now += 60000;
+      await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .set('Cookie', cookie)
+        .expect(204);
+      await request(app.getHttpServer())
+        .post('/api/auth/activity')
+        .set('Cookie', cookie)
+        .expect(401);
+      expect(historical).toEqual(final);
+      expect(rows.size).toBe(1);
+    });
+
+    it('retains an authenticated session as replaced when a fresh login regenerates its ID', async () => {
+      const cookie = await login();
+      const historical = row();
+      now += 5000;
+      const response = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set('Cookie', cookie)
+        .send({ username: 'test', password: 'mocked' })
+        .expect(201);
+      const freshCookie = response.headers['set-cookie'][0].split(';')[0];
+      expect(freshCookie).not.toBe(cookie);
+      expect(historical).toMatchObject({
+        ended_at: now,
+        end_reason: 'replaced',
+        expires_at: now,
+      });
+      expect(rows.size).toBe(2);
+      expect(row().ended_at).toBeNull();
+      await request(app.getHttpServer())
+        .get('/api/ampp/session/current')
+        .set('Cookie', cookie)
+        .expect(401);
+      await request(app.getHttpServer())
+        .get('/api/ampp/session/current')
+        .set('Cookie', freshCookie)
+        .expect(200);
+    });
+
+    it('records the original expiry when logout is observed after the deadline', async () => {
+      const cookie = await login();
+      const historical = row();
+      const deadline = historical.expires_at;
+      now = deadline + 120000;
+      await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .set('Cookie', cookie)
+        .expect(204);
+      expect(historical).toMatchObject({
+        ended_at: deadline,
+        expires_at: deadline,
+        end_reason: 'expired',
+      });
+    });
+
+    it('falls back to stored identity for legacy sessions and retains their unknown login metadata', async () => {
+      const cookie = await login();
+      const historical = row();
+      const data = stored();
+      delete data.audit;
+      data.amppAccessToken = 'LEGACY_SECRET';
+      historical.data = JSON.stringify(data);
+      historical.started_at = null;
+      historical.ip_address = null;
+      await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .set('Cookie', cookie)
+        .expect(204);
+      expect(historical.started_at).toBeNull();
+      expect(historical.ip_address).toBeNull();
+      expect(
+        (JSON.parse(historical.data) as session.SessionData).audit?.username,
+      ).toBe(user.username);
+      expect(historical.data).not.toContain('LEGACY_SECRET');
+    });
+
+    it('rejects a retained ended row even when its expiry is later than now', async () => {
+      const cookie = await login();
+      row().ended_at = now - 1;
+      row().end_reason = 'revoked';
+      await request(app.getHttpServer())
+        .get('/api/ampp/session/current')
+        .set('Cookie', cookie)
+        .expect(401);
+      expect(rows.size).toBe(1);
+      expect(row().ended_at).toBe(now - 1);
+    });
+
+    it('rejects a late save after logout and preserves the retained row byte-for-byte', async () => {
+      const cookie = await login();
+      const sid = [...rows.keys()][0];
+      const historical = row();
+      const delayed = await new Promise<session.SessionData>(
+        (resolve, reject) => {
+          void instances[0].store.get(sid, (error: Error | null, data) =>
+            error ? reject(error) : resolve(data),
+          );
+        },
+      );
+      await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .set('Cookie', cookie)
+        .expect(204);
+      const ended = { ...historical };
+      delayed.amppAccessToken = 'LATE_SECRET';
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          void instances[0].store.set(sid, delayed, (error?: Error) =>
+            error ? reject(error) : resolve(),
+          );
+        }),
+      ).rejects.toThrow('Session expired or revoked');
+      expect(historical).toEqual(ended);
     });
   });
 
   describe('renewal budget', () => {
-    it('performs no UPDATEs within the interval on polls and ordinary HTTP requests', async () => {
+    it('performs no renewal UPDATEs within the interval on polls and ordinary HTTP requests', async () => {
       const cookie = await login();
       const initial = row().data;
       for (const path of [

@@ -47,6 +47,13 @@ export type AmppDashboardMatrixAccess = Record<
 declare module 'express-session' {
   interface SessionData {
     user?: AuthenticatedUser;
+    audit?: {
+      userId: string;
+      username: string;
+      displayName: string;
+      clientId: number;
+      userType: 'admin' | 'user';
+    };
     authorizationFingerprint?: string;
     authorizationCheckedAt?: number;
     parentWorkloadId?: string;

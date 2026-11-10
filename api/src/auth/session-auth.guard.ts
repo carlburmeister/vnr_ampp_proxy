@@ -8,7 +8,7 @@ import type { Request, Response } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { AuthService } from './auth.service';
-import { SessionExpiredError } from './mysql-session.store';
+import { MysqlSessionStore, SessionExpiredError } from './mysql-session.store';
 import { clearSessionCookie } from './session-cookie';
 // TEMP AMPP trace: remove with diagnostics/ampp-proxy-trace.ts.
 import { tracePhase } from '../ampp-proxy/diagnostics/ampp-proxy-trace';
@@ -78,6 +78,12 @@ export class SessionAuthGuard implements CanActivate {
           );
         });
       }
+      // Browser contact counts even if a subsequent AMPP operation fails.
+      if (request.sessionStore instanceof MysqlSessionStore)
+        await request.sessionStore.recordContact(
+          request.sessionID,
+          request.session,
+        );
     } catch (error) {
       if (
         !(

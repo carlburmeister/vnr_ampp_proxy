@@ -11,6 +11,7 @@ export function appHarness() {
   let tree;
   const effects = [];
   const requests = [];
+  const activityStates = [];
   const intervals = new Map();
   const deadlines = new Map();
   let nextTimer = 0;
@@ -57,6 +58,7 @@ export function appHarness() {
     './services/amppSessionApi': { getCurrentSession: (signal) => new Promise((resolve, reject) => {
       requests.push({ signal, resolve, reject });
     }) },
+    './hooks/useSessionActivity': { useSessionActivity: (enabled) => activityStates.push(enabled) },
   };
   const context = vm.createContext({
     exports: {}, require: (name) => {
@@ -85,7 +87,7 @@ export function appHarness() {
   }
   render();
   return {
-    requests, document,
+    requests, document, activityStates,
     find,
     findMounted: (type) => find(type, tree, true),
     async flush() { for (let i = 0; i < 12; i++) { await Promise.resolve(); if (dirty) render(); } },
