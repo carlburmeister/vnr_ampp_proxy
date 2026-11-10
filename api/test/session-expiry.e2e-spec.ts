@@ -23,12 +23,14 @@ import {
   sessionCookieSettings,
 } from '../src/auth/session-cookie';
 import { AmppSessionController } from '../src/ampp/controllers/ampp-session.controller';
+import {
+  applySessionEnding,
+  type RetainedSessionRow,
+} from './helpers/session-retention-fixture';
 
 jest.mock('mysql2/promise', () => ({ createPool: jest.fn() }));
 
-type SessionRow = {
-  expires_at: number;
-  data: string;
+type SessionRow = RetainedSessionRow & {
   last_seen_at?: number | null;
   last_active_time?: number | null;
 };
@@ -80,9 +82,15 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
       params: (string | number)[] = [],
     ): SqlResult => {
       if (sql.startsWith('CREATE')) return [{ affectedRows: 0 }];
+      const ending = applySessionEnding(sql, params, rows);
+      if (ending) return [ending];
       if (sql.startsWith('SELECT')) {
         const row = rows.get(String(params[0]));
-        return [row && row.expires_at > Number(params[1]) ? [{ ...row }] : []];
+        return [
+          row && row.ended_at == null && row.expires_at > Number(params[1])
+            ? [{ ...row }]
+            : [],
+        ];
       }
       if (sql.startsWith('INSERT')) {
         if (rows.has(String(params[0]))) throw new Error('Duplicate session');
@@ -91,6 +99,8 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
           data: String(params[2]),
           last_seen_at: Number(params[6]),
           last_active_time: Number(params[5]),
+          ended_at: null,
+          end_reason: null,
         });
         return [{ affectedRows: 1 }];
       }
@@ -116,6 +126,7 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
           const column = metadata[1] as 'last_seen_at' | 'last_active_time';
           if (
             !row ||
+            row.ended_at != null ||
             row.expires_at <= Number(params[2]) ||
             (row[column] != null && row[column] > Number(params[3]))
           )
@@ -125,7 +136,11 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
         }
         const hasData = sql.includes('data = ?');
         const row = rows.get(String(params[hasData ? 2 : 1]));
-        if (!row || row.expires_at <= Number(params[hasData ? 3 : 2]))
+        if (
+          !row ||
+          row.ended_at != null ||
+          row.expires_at <= Number(params[hasData ? 3 : 2])
+        )
           return [{ affectedRows: 0 }];
         row.expires_at = Math.max(row.expires_at, Number(params[0]));
         if (hasData) row.data = String(params[1]);
@@ -330,7 +345,11 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
       .get('/api/ampp/session/current')
       .set('Cookie', cookie)
       .expect(401);
-    expect(rows.size).toBe(0);
+    expect(rows.size).toBe(1);
+    expect([...rows.values()][0]).toMatchObject({
+      ended_at: deadline,
+      end_reason: 'expired',
+    });
   });
 
   it('fails a poll on a database write error and can recover on the next poll', async () => {
@@ -453,7 +472,7 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
     expect(response.body.allowedGvuiLayouts).toEqual(data.allowedGvuiLayouts);
   });
 
-  it('rejects an expired cookie, deletes its row and clears the configured cookie', async () => {
+  it('rejects an expired cookie, retains its ended row and clears the configured cookie', async () => {
     const cookie = await login();
     [...rows.values()][0].expires_at = Date.now() - 1;
     const response = await request(app.getHttpServer())
@@ -465,7 +484,8 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
     expect(response.headers['set-cookie'][0]).toMatch(
       /test.sid=; Path=\/; Expires=.*1970.*HttpOnly; SameSite=Lax/,
     );
-    expect(rows.size).toBe(0);
+    expect(rows.size).toBe(1);
+    expect([...rows.values()][0].end_reason).toBe('expired');
   });
 
   it('rejects a missing/revoked row without recreating it', async () => {
@@ -505,7 +525,8 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
       .get('/api/ampp/session/current')
       .set('Cookie', cookie)
       .expect(401);
-    expect(rows.size).toBe(0);
+    expect(rows.size).toBe(1);
+    expect([...rows.values()][0].end_reason).toBe('revoked');
   });
 
   it('does not revoke a valid session for a temporary authorization lookup failure', async () => {
@@ -529,7 +550,8 @@ describe('Browser session lifecycle (isolated HTTP)', () => {
       .post('/api/auth/logout')
       .set('Cookie', oldCookie)
       .expect(204);
-    expect(rows.size).toBe(0);
+    expect(rows.size).toBe(1);
+    expect([...rows.values()][0].end_reason).toBe('logout');
     const newCookie = await login();
     expect(newCookie).not.toBe(oldCookie);
     await request(app.getHttpServer())

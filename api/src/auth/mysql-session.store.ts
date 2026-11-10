@@ -20,6 +20,24 @@ export type MysqlSessionStoreOptions = {
 
 export const DEFAULT_SESSION_TOUCH_INTERVAL_MS = 60000;
 export const SESSION_METADATA_INTERVAL_MS = 30000;
+export type SessionEndReason = 'logout' | 'expired' | 'revoked' | 'replaced';
+
+// Only identity survives termination. Use the current database JSON so ending
+// a session cannot restore an older authorization snapshot. Legacy/corrupt
+// payloads retain known identity or nulls without blocking expiry cleanup.
+const validSessionJson = "IF(JSON_VALID(data), data, '{}')";
+const endedSessionDataSql = `JSON_OBJECT('audit', JSON_OBJECT(${Object.entries({
+  userId: 'id',
+  username: 'username',
+  displayName: 'displayName',
+  clientId: 'clientId',
+  userType: 'userType',
+})
+  .map(
+    ([key, legacy]) =>
+      `'${key}', COALESCE(JSON_EXTRACT(${validSessionJson}, '$.audit.${key}'), JSON_EXTRACT(${validSessionJson}, '$.user.${legacy}'))`,
+  )
+  .join(', ')}))`;
 
 type BrowserContact = {
   last_seen_at: number | null;
@@ -91,7 +109,7 @@ export class MysqlSessionStore extends session.Store {
       if (this.cleaning) return;
       this.cleaning = true;
       void this.ready
-        .then(() => this.deleteExpiredSessions())
+        .then(() => this.expireSessions())
         .catch(() =>
           Logger.warn(
             'Expired session cleanup failed; will retry',
@@ -127,17 +145,14 @@ export class MysqlSessionStore extends session.Store {
       const [rows] = await this.pool.execute<SessionRow[]>(
         `SELECT data, expires_at, last_seen_at, last_active_time
          FROM user_sessions
-         WHERE session_id = ? AND expires_at > ?
+         WHERE session_id = ? AND expires_at > ? AND ended_at IS NULL
          LIMIT 1`,
         [sid, Date.now()],
       );
 
       if (!rows.length) {
         // The predicate also protects a session renewed by a concurrent request.
-        await this.pool.execute<ResultSetHeader>(
-          `DELETE FROM user_sessions WHERE session_id = ? AND expires_at <= ?`,
-          [sid, Date.now()],
-        );
+        await this.endSession(sid, 'expired');
         callback(null, null);
         return;
       }
@@ -173,7 +188,7 @@ export class MysqlSessionStore extends session.Store {
       const [result] = await this.pool.execute<ResultSetHeader>(
         `UPDATE user_sessions
          SET expires_at = GREATEST(expires_at, ?), data = ?
-         WHERE session_id = ? AND expires_at > ?`,
+         WHERE session_id = ? AND expires_at > ? AND ended_at IS NULL`,
         [expiresAt, JSON.stringify(sessionData), sid, Date.now()],
       );
       if (!result.affectedRows) throw new SessionExpiredError();
@@ -217,6 +232,16 @@ export class MysqlSessionStore extends session.Store {
     await this.ready;
     const expiresAt = this.getExpiresAt(sessionData);
     const now = Date.now();
+    if (sessionData.user) {
+      const user = sessionData.user;
+      sessionData.audit = {
+        userId: user.id,
+        username: user.username,
+        displayName: user.displayName,
+        clientId: user.clientId,
+        userType: user.userType,
+      };
+    }
     await this.pool.execute<ResultSetHeader>(
       `INSERT INTO user_sessions
        (session_id, expires_at, data, ip_address, started_at, last_active_time, last_seen_at)
@@ -257,7 +282,7 @@ export class MysqlSessionStore extends session.Store {
     const [result] = await this.pool.execute<ResultSetHeader>(
       `UPDATE user_sessions
        SET ${column} = GREATEST(COALESCE(${column}, 0), ?)
-       WHERE session_id = ? AND expires_at > ?
+       WHERE session_id = ? AND expires_at > ? AND ended_at IS NULL
          AND (${column} IS NULL OR ${column} <= ?)`,
       [now, sid, now, now - SESSION_METADATA_INTERVAL_MS],
     );
@@ -273,17 +298,26 @@ export class MysqlSessionStore extends session.Store {
 
   async destroy(sid: string, callback?: (error?: any) => void) {
     try {
-      await this.ready;
-
-      await this.pool.execute<ResultSetHeader>(
-        `DELETE FROM user_sessions WHERE session_id = ?`,
-        [sid],
-      );
+      await this.endSession(sid, 'revoked');
 
       callback?.();
     } catch (error) {
       callback?.(error);
     }
+  }
+
+  async endSession(sid: string, reason: SessionEndReason): Promise<void> {
+    await this.ready;
+    const now = Date.now();
+    await this.pool.execute<ResultSetHeader>(
+      `UPDATE user_sessions
+       SET data = ${endedSessionDataSql},
+           ended_at = LEAST(expires_at, ?),
+           end_reason = CASE WHEN expires_at <= ? THEN 'expired' ELSE ? END,
+           expires_at = LEAST(expires_at, ?)
+       WHERE session_id = ? AND ended_at IS NULL${reason === 'expired' ? ' AND expires_at <= ?' : ''}`,
+      [now, now, reason, now, sid, ...(reason === 'expired' ? [now] : [])],
+    );
   }
 
   async touch(
@@ -318,7 +352,7 @@ export class MysqlSessionStore extends session.Store {
         }
         const [result] = await this.pool.execute<ResultSetHeader>(
           `UPDATE user_sessions SET expires_at = GREATEST(expires_at, ?)
-           WHERE session_id = ? AND expires_at > ? AND expires_at <= ?`,
+           WHERE session_id = ? AND expires_at > ? AND expires_at <= ? AND ended_at IS NULL`,
           [expiresAt, sid, Date.now(), expiresAt - this.touchIntervalMs],
         );
         // Another process may have renewed the row or deleted it after our read.
@@ -334,7 +368,7 @@ export class MysqlSessionStore extends session.Store {
 
       const [result] = await this.pool.execute<ResultSetHeader>(
         `UPDATE user_sessions SET expires_at = GREATEST(expires_at, ?)
-         WHERE session_id = ? AND expires_at > ?`,
+         WHERE session_id = ? AND expires_at > ? AND ended_at IS NULL`,
         [expiresAt, sid, Date.now()],
       );
       if (!result.affectedRows) throw new SessionExpiredError();
@@ -351,7 +385,7 @@ export class MysqlSessionStore extends session.Store {
       (RowDataPacket & { expires_at: number })[]
     >(
       `SELECT expires_at FROM user_sessions
-       WHERE session_id = ? AND expires_at > ? LIMIT 1`,
+       WHERE session_id = ? AND expires_at > ? AND ended_at IS NULL LIMIT 1`,
       [sid, Date.now()],
     );
     const expiresAt = Number(rows[0]?.expires_at);
@@ -376,7 +410,7 @@ export class MysqlSessionStore extends session.Store {
 
   private async initialize() {
     await this.createTable();
-    await this.deleteExpiredSessions();
+    await this.expireSessions();
   }
 
   private async createTable() {
@@ -389,14 +423,20 @@ export class MysqlSessionStore extends session.Store {
         started_at BIGINT UNSIGNED NULL DEFAULT NULL,
         last_active_time BIGINT UNSIGNED NULL DEFAULT NULL,
         last_seen_at BIGINT UNSIGNED NULL DEFAULT NULL,
-        INDEX idx_user_sessions_expires_at (expires_at)
+        ended_at BIGINT UNSIGNED NULL DEFAULT NULL,
+        end_reason ENUM('logout', 'expired', 'revoked', 'replaced') NULL DEFAULT NULL,
+        INDEX idx_user_sessions_expires_at (expires_at),
+        INDEX idx_user_sessions_ended_expires (ended_at, expires_at),
+        INDEX idx_user_sessions_started_at (started_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
     );
   }
 
-  private async deleteExpiredSessions() {
+  private async expireSessions() {
     await this.pool.execute<ResultSetHeader>(
-      `DELETE FROM user_sessions WHERE expires_at <= ? LIMIT 1000`,
+      `UPDATE user_sessions
+       SET data = ${endedSessionDataSql}, ended_at = expires_at, end_reason = 'expired'
+       WHERE ended_at IS NULL AND expires_at <= ? LIMIT 1000`,
       [Date.now()],
     );
   }

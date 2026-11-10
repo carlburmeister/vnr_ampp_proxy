@@ -2,6 +2,8 @@
 // node test/session-metadata-mysql.cjs PORT
 // The database name is deliberately fixed; no application DB settings are read.
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const session = require('express-session');
 const { createPool } = require('mysql2/promise');
 const {
@@ -33,7 +35,13 @@ const options = {
     stores.push(store, second);
     const data = {
       cookie: new session.Cookie({ maxAge: SESSION_MAX_AGE }),
-      user: { id: '42' },
+      user: {
+        id: '42',
+        username: 'original',
+        displayName: 'Original client',
+        clientId: 7,
+        userType: 'user',
+      },
     };
     await store.create('login', data, '2001:db8::42');
     const load = (from = store) =>
@@ -53,11 +61,16 @@ const options = {
     for (const field of ['started_at', 'last_seen_at', 'last_active_time'])
       assert.equal(Number(login[field]), now);
     const [columns] = await pool.execute('SHOW COLUMNS FROM user_sessions');
+    const [indexes] = await pool.execute('SHOW INDEX FROM user_sessions');
+    for (const name of ['idx_user_sessions_ended_expires', 'idx_user_sessions_started_at'])
+      assert.ok(indexes.some((index) => index.Key_name === name));
     for (const field of [
       'ip_address',
       'started_at',
       'last_seen_at',
       'last_active_time',
+      'ended_at',
+      'end_reason',
     ])
       assert.equal(
         columns.find((column) => column.Field === field).Null,
@@ -138,7 +151,15 @@ const options = {
     );
 
     const beforeLogout = await load();
+    const loginAudit = { ...beforeLogout.audit };
+    beforeLogout.user.username = 'renamed';
+    beforeLogout.user.displayName = 'Renamed client';
+    beforeLogout.amppAccessToken = 'AUDIT_SECRET';
+    beforeLogout.amppCookieJar = { cookies: [{ value: 'AUDIT_SECRET' }] };
+    beforeLogout.audit.secret = 'AUDIT_SECRET';
+    await save('set', beforeLogout);
     now += 60000;
+    await store.endSession('login', 'logout');
     await new Promise((resolve, reject) =>
       store.destroy('login', (error) => (error ? reject(error) : resolve())),
     );
@@ -151,10 +172,186 @@ const options = {
       SessionExpiredError,
     );
     await assert.rejects(save('set', beforeLogout), SessionExpiredError);
-    assert.equal(await row(), undefined);
+    await assert.rejects(save('touch', beforeLogout), SessionExpiredError);
+    const ended = await row();
+    assert.equal(Number(ended.ended_at), now);
+    assert.equal(Number(ended.expires_at), now);
+    assert.equal(ended.end_reason, 'logout');
+    assert.deepEqual(JSON.parse(ended.data), { audit: loginAudit });
+    assert.ok(!ended.data.includes('AUDIT_SECRET'));
+    now += 60000;
+    await second.endSession('login', 'replaced');
+    await store.endSession('login', 'expired');
+    assert.equal(await load(), null);
+    assert.deepEqual(
+      await row(),
+      ended,
+      'repeated endings and stale cookies preserve history',
+    );
+
+    const deadline = now - 2000;
+    await pool.execute(
+      'INSERT INTO user_sessions (session_id,expires_at,data) VALUES (?,?,?)',
+      ['corrupt', deadline, 'invalid json'],
+    );
+    await new Promise((resolve, reject) =>
+      store.get('corrupt', (error, value) =>
+        error ? reject(error) : resolve(value),
+      ),
+    );
+    const [[corrupt]] = await pool.execute(
+      'SELECT * FROM user_sessions WHERE session_id=?',
+      ['corrupt'],
+    );
+    assert.equal(Number(corrupt.ended_at), deadline);
+    assert.equal(corrupt.end_reason, 'expired');
+    assert.deepEqual(JSON.parse(corrupt.data), {
+      audit: {
+        userId: null,
+        username: null,
+        displayName: null,
+        clientId: null,
+        userType: null,
+      },
+    });
+
+    for (const reason of ['revoked', 'replaced']) {
+      await store.create(reason, {
+        cookie: new session.Cookie({ maxAge: SESSION_MAX_AGE }),
+        user: { ...data.user },
+      });
+      if (reason === 'revoked')
+        await new Promise((resolve, reject) =>
+          store.destroy(reason, (error) => (error ? reject(error) : resolve())),
+        );
+      else await store.endSession(reason, reason);
+      const [[finished]] = await pool.execute(
+        'SELECT * FROM user_sessions WHERE session_id=?',
+        [reason],
+      );
+      assert.equal(finished.end_reason, reason);
+      assert.equal(Number(finished.ended_at), now);
+    }
+
+    await store.create('race', {
+      cookie: new session.Cookie({ maxAge: SESSION_MAX_AGE }),
+      user: { ...data.user },
+    });
+    const pending = await new Promise((resolve, reject) =>
+      store.get('race', (error, value) =>
+        error ? reject(error) : resolve(value),
+      ),
+    );
+    pending.amppAccessToken = 'RACE_SECRET';
+    await Promise.allSettled([
+      store.endSession('race', 'logout'),
+      new Promise((resolve, reject) =>
+        second.set('race', pending, (error) =>
+          error ? reject(error) : resolve(),
+        ),
+      ),
+    ]);
+    const [[raced]] = await pool.execute(
+      'SELECT * FROM user_sessions WHERE session_id=?',
+      ['race'],
+    );
+    assert.equal(raced.end_reason, 'logout');
+    assert.ok(!raced.data.includes('RACE_SECRET'));
+
+    // Apply the exact migration to the prior session schema with live data.
+    await Promise.all(stores.splice(0).map((active) => active.close()));
+    await pool.execute('DROP TABLE user_sessions');
+    await pool.execute(`CREATE TABLE user_sessions (
+      session_id VARCHAR(128) PRIMARY KEY, expires_at BIGINT UNSIGNED NOT NULL, data LONGTEXT NOT NULL,
+      ip_address VARCHAR(45) NULL, started_at BIGINT UNSIGNED NULL,
+      last_active_time BIGINT UNSIGNED NULL, last_seen_at BIGINT UNSIGNED NULL,
+      INDEX idx_user_sessions_expires_at (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+    const legacyPayload = JSON.stringify({
+      cookie: new session.Cookie({ maxAge: SESSION_MAX_AGE }),
+      user: data.user,
+      amppAccessToken: 'LEGACY_SECRET',
+    });
+    await pool.execute(
+      'INSERT INTO user_sessions (session_id,expires_at,data) VALUES (?,?,?)',
+      ['legacy-active', now + 60000, legacyPayload],
+    );
+    await pool.execute(
+      'INSERT INTO user_sessions (session_id,expires_at,data) VALUES (?,?,?)',
+      ['legacy-expired', now - 10000, legacyPayload],
+    );
+    await pool.query(
+      fs.readFileSync(
+        path.resolve(
+          __dirname,
+          '../migrations/20261110-session-audit-retention.sql',
+        ),
+        'utf8',
+      ),
+    );
+    const [[migrated]] = await pool.execute(
+      'SELECT * FROM user_sessions WHERE session_id=?',
+      ['legacy-active'],
+    );
+    assert.equal(migrated.ended_at, null);
+    assert.equal(migrated.end_reason, null);
+    assert.equal(migrated.data, legacyPayload);
+    const migrationStore = new MysqlSessionStore(options);
+    stores.push(migrationStore);
+    await new Promise((resolve, reject) =>
+      migrationStore.get('legacy-active', (error, value) =>
+        error ? reject(error) : resolve(value),
+      ),
+    );
+    const [[expiredLegacy]] = await pool.execute(
+      'SELECT * FROM user_sessions WHERE session_id=?',
+      ['legacy-expired'],
+    );
+    assert.equal(Number(expiredLegacy.ended_at), now - 10000);
+    assert.equal(expiredLegacy.end_reason, 'expired');
+    assert.equal(expiredLegacy.started_at, null);
+    assert.equal(expiredLegacy.ip_address, null);
+    assert.equal(
+      JSON.parse(expiredLegacy.data).audit.username,
+      data.user.username,
+    );
+    assert.ok(!expiredLegacy.data.includes('LEGACY_SECRET'));
+    await Promise.all(stores.splice(0).map((active) => active.close()));
+
+    // No timers are running while inserting a batch larger than the per-pass cap.
+    await pool.query(
+      'INSERT INTO user_sessions (session_id,expires_at,data) VALUES ?',
+      [
+        Array.from({ length: 1001 }, (_, i) => [
+          `batch-${i}`,
+          now - 1,
+          legacyPayload,
+        ]),
+      ],
+    );
+    for (const expected of [1000, 1001]) {
+      const cleanup = new MysqlSessionStore(options);
+      stores.push(cleanup);
+      await new Promise((resolve, reject) =>
+        cleanup.get('missing', (error) => (error ? reject(error) : resolve())),
+      );
+      const [[count]] = await pool.execute(
+        "SELECT COUNT(*) AS count FROM user_sessions WHERE session_id LIKE 'batch-%' AND ended_at IS NOT NULL",
+      );
+      assert.equal(Number(count.count), expected);
+      await Promise.all(stores.splice(0).map((active) => active.close()));
+    }
+    const [[total]] = await pool.execute(
+      'SELECT COUNT(*) AS count FROM user_sessions',
+    );
+    assert.equal(
+      Number(total.count),
+      1003,
+      'cleanup retains every historical row',
+    );
     const [[version]] = await pool.execute('SELECT VERSION() AS version');
     console.log(
-      `PASS MySQL ${version.version}: nullable bootstrap schema, login metadata, concurrent throttling, monotonicity, legacy NULLs, JSON-save isolation, revocation`,
+      `PASS MySQL ${version.version}: bootstrap + additive migration, metadata throttling, retained logout/expiry/revocation/replacement, immutable identity, credential removal, concurrent saves, corrupt JSON, 1000-row cleanup cap`,
     );
   } finally {
     Date.now = realNow;

@@ -136,6 +136,7 @@ const server = http.createServer(async (req, res) => {
     page.on('pageerror', (error) => errors.push(error.message));
     await page.clock.install();
     await page.goto(origin, { waitUntil: 'networkidle' });
+    await page.bringToFront();
     await page.getByRole('heading', { name: 'Fixture', exact: true }).waitFor();
     const overlays = await page.locator('vite-error-overlay').allTextContents();
     assert.equal(
@@ -160,6 +161,10 @@ const server = http.createServer(async (req, res) => {
       window.scrollTo(0, 100);
     });
     await page.clock.runFor(30000);
+    // Settle session polls after advancing virtual time before sending input;
+    // a verification failure temporarily disables tracking by design.
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('heading', { name: 'Fixture', exact: true }).waitFor();
     assert.ok(polls > 1, 'the real SPA continues its idle session polling');
     assert.equal(
       activity.length,
