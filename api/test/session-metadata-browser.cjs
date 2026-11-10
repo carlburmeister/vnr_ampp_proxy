@@ -1,9 +1,11 @@
 // Run after both builds: node test/session-metadata-browser.cjs
+// Also run with --dev to exercise the real Vite development server/config.
 // Requires Playwright and Chromium. Local fixtures only; no live AMPP or DB.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { chromium } = require('playwright');
 const { ConfigService } = require('@nestjs/config');
 const {
@@ -12,6 +14,8 @@ const {
 
 const webRoot = path.resolve(__dirname, '../../web/dist');
 const workload = '11111111-1111-4111-8111-111111111111';
+const proxyPath = `/api/ampp-proxy/ui/${workload}/fixture`;
+const development = process.argv.includes('--dev');
 const rewriter = new AmppResponseRewriterService(
   new ConfigService({ PLATFORM_URL: 'https://ampp.invalid' }),
 );
@@ -55,13 +59,13 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204).end();
   } else if (pathname.startsWith('/api/ampp-proxy/api/')) {
     res.writeHead(204).end();
-  } else if (pathname === '/proxy' || pathname.endsWith('/embedded')) {
+  } else if (pathname === proxyPath || pathname.endsWith('/embedded')) {
     const embedded = pathname.endsWith('/embedded');
     const html = `<html><head></head><body><button id="control">Control</button>
       ${embedded ? '' : '<iframe src="/embedded"></iframe>'}
       <script>setInterval(function(){fetch('/notifications/api/v1/notifications/fixture');},1000);</script>
       </body></html>`;
-    const origin = `http://127.0.0.1:${server.address().port}`;
+    const origin = `http://${req.headers.host}`;
     const rewritten = rewriter.rewrite(workload, origin, {
       status: 200,
       headers: { 'content-type': 'text/html' },
@@ -91,19 +95,61 @@ const server = http.createServer(async (req, res) => {
 
 (async () => {
   let browser;
+  let vite;
   try {
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const origin = `http://127.0.0.1:${server.address().port}`;
+    let origin = `http://127.0.0.1:${server.address().port}`;
+    if (development) {
+      const { createServer } = await import(
+        pathToFileURL(
+          path.resolve(
+            __dirname,
+            '../../web/node_modules/vite/dist/node/index.js',
+          ),
+        ).href
+      );
+      vite = await createServer({
+        root: path.resolve(__dirname, '../../web'),
+        configFile: path.resolve(__dirname, '../../web/vite.config.ts'),
+        logLevel: 'silent',
+        server: {
+          host: '127.0.0.1',
+          port: 0,
+          strictPort: false,
+          proxy: { '/api': { target: origin, changeOrigin: false } },
+        },
+      });
+      await vite.listen();
+      origin = `http://127.0.0.1:${vite.httpServer.address().port}`;
+    }
     browser = await chromium.launch({
       executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium',
       headless: true,
       args: ['--no-sandbox'],
     });
     const page = await browser.newPage();
+    const trackerRequests = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/session-activity.js')
+        trackerRequests.push(request.url());
+    });
     page.on('pageerror', (error) => errors.push(error.message));
     await page.clock.install();
     await page.goto(origin, { waitUntil: 'networkidle' });
     await page.getByRole('heading', { name: 'Fixture', exact: true }).waitFor();
+    const overlays = await page.locator('vite-error-overlay').allTextContents();
+    assert.equal(
+      overlays.length,
+      0,
+      `Vite overlay after login: ${overlays.join('\n')}`,
+    );
+    assert.ok(trackerRequests.length > 0, 'login must load the tracker asset');
+    for (const url of trackerRequests)
+      assert.equal(
+        new URL(url).searchParams.has('import'),
+        false,
+        'public tracker must bypass source-module transforms',
+      );
     assert.equal(
       activity.length,
       0,
@@ -151,7 +197,7 @@ const server = http.createServer(async (req, res) => {
     const proxy = await browser.newPage();
     proxy.on('pageerror', (error) => errors.push(error.message));
     await proxy.clock.install();
-    await proxy.goto(origin + '/proxy', { waitUntil: 'networkidle' });
+    await proxy.goto(origin + proxyPath, { waitUntil: 'networkidle' });
     await proxy.bringToFront();
     const beforeProxy = activity.length;
     await proxy.clock.runFor(30000);
@@ -184,10 +230,11 @@ const server = http.createServer(async (req, res) => {
     );
     assert.deepEqual(errors, []);
     console.log(
-      'PASS: built SPA idle polling/input/logout; proxied page and iframe input; native activity route; no browser errors',
+      `PASS (${development ? 'Vite development' : 'production build'}): SPA idle polling/input/logout; proxied page and iframe input; native activity route; no browser errors`,
     );
   } finally {
     await browser?.close();
+    await vite?.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
