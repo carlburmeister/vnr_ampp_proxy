@@ -1,5 +1,6 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { panelUiTarget } from './ampp-maverikx-panels';
 
 import { createAmppRedirectStorageScript } from './ampp-redirect-storage';
 import type { AmppCookieHttpResponse } from './ampp-cookie-http.service';
@@ -582,6 +583,8 @@ export class AmppResponseRewriterService {
   }
 
   private getUiTargetWorkloadId(pathname: string): string | undefined {
+    const panel = panelUiTarget(pathname);
+    if (panel) return panel.workloadId;
     const segments = pathname
       .split('/')
       .filter(Boolean)
@@ -684,7 +687,7 @@ const amppRootPaths=['/app/','/identity/','/assets/','/static/','/mocha/','/ampp
 if(c.gvuiDocument)amppRootPaths.push('/gvui/');
 const isAmppRootPath=function(path){return amppRootPaths.some(function(prefix){return path.startsWith(prefix);});};
 const isAmppApiPath=function(path){return /^\\/(?:api|graphql)(?:\\/|$)/i.test(path)||/^\\/(?:discovery|configuration|identity|notifications|logging|hubmanager)\\/api(?:\\/|$)/i.test(path)||/^\\/ampp\\/control\\/api(?:\\/|$)/i.test(path)||/^\\/cluster\\/(?:store|state|matrix|control|fabric|snapshot)\\/api(?:\\/|$)/i.test(path)||/^\\/mocha\\/application\\/[^/]+\\/api(?:\\/|$)/i.test(path);};
-const getUiTargetWorkloadId=function(path){try{const s=String(path).split('/').filter(Boolean).map(function(v){try{return decodeURIComponent(v);}catch{return v;}});if(s[0]==='app'&&s[1]==='wrapper'){if(s[2]==='single')return s[4];if(s[2]==='embedded'&&s[3]==='single')return s[5];if(s[2]==='embedded'&&s[3]==='callback'&&s[4]==='embedded'&&s[5]==='single')return s[7];}if(s[0]==='mocha'&&s[1]==='application')return s[2];}catch{}return undefined;};
+const getUiTargetWorkloadId=function(path){try{const s=String(path).split('/').filter(Boolean).map(function(v){try{return decodeURIComponent(v);}catch{return v;}});if(s[0]==='app'&&s[1]==='wrapper'){if(s[2]==='single')return s[4];if(s[2]==='embedded'&&s[3]==='single')return s[5];if(s[2]==='embedded'&&s[3]==='callback'&&s[4]==='embedded'&&s[5]==='single')return s[7];}if(s[0]==='mocha'&&s[1]==='application')return s[2];if(s[0]==='ampp'&&s[1]==='control'&&s[2]==='embedded'&&s[3]==='panelControl'&&s[5]==='workload')return s[6];}catch{}return undefined;};
 const proxyBaseForPath=function(path){const targetWorkloadId=getUiTargetWorkloadId(path);if(!targetWorkloadId)return isAmppApiPath(path)?proxyApiBase:proxyHttpBase;const route=isAmppApiPath(path)?'/api/ampp-proxy/api/':'/api/ampp-proxy/ui/';return window.location.origin+route+encodeURIComponent(targetWorkloadId);};
 const stripUiProxyPath=function(value){return String(value).split(c.httpProxyPath).join('');};
 

@@ -28,6 +28,7 @@ const SESSION_KEYS = [
   'amppDashboardMatrixAccess',
   'amppNotificationMailboxIds',
   'amppRecorderIdsByWorkload',
+  'amppPanelIdsByWorkload',
   'gvuiMailboxes',
 ] as const;
 
@@ -100,6 +101,7 @@ export class AmppProxySessionService {
             'amppAllowedWorkloadIds', 'amppResourceWorkloadIds', 'authorizationFingerprint', 'authorizationCheckedAt',
             'amppMatrixAccess', 'amppDashboardMatrixAccess', 'amppNotificationMailboxIds',
             'amppRecorderIdsByWorkload',
+            'amppPanelIdsByWorkload',
           ] as const) {
             (req.session as any)[key] = this.clone<unknown>(latest[key]);
           }
@@ -181,6 +183,26 @@ export class AmppProxySessionService {
             else merged[id] = after[id];
           }
           req.session.amppRecorderIdsByWorkload = merged;
+        }
+
+        if (changedKeys.includes('amppPanelIdsByWorkload')) {
+          const before = snapshot.values.amppPanelIdsByWorkload ?? {};
+          const after = current.amppPanelIdsByWorkload ?? {};
+          const merged = { ...latest.amppPanelIdsByWorkload };
+          for (const id of new Set([
+            ...Object.keys(before),
+            ...Object.keys(after),
+          ])) {
+            // Merge independent workload tabs; a newer catalogue/removal wins.
+            if (
+              this.same(before[id], after[id]) ||
+              !this.same(merged[id], before[id])
+            )
+              continue;
+            if (after[id] === undefined) delete merged[id];
+            else merged[id] = after[id];
+          }
+          req.session.amppPanelIdsByWorkload = merged;
         }
 
         if (changedKeys.includes('gvuiMailboxes')) {

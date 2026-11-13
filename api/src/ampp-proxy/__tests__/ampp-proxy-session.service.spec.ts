@@ -3,6 +3,51 @@ import type { SessionData } from 'express-session';
 import { AmppProxySessionService } from '../ampp-proxy-session.service';
 
 describe('AMPP proxy session persistence', () => {
+  it('merges panel catalogues from independent workload tabs without restoring a newer removal', async () => {
+    const { req, service } = setup({
+      amppPanelIdsByWorkload: { first: ['panel-a'], second: ['panel-b'] },
+    });
+    Object.assign(req.session, {
+      amppPanelIdsByWorkload: { first: ['panel-a'] },
+    });
+    const snapshot = service.snapshot(req.session as never);
+    Object.assign(req.session, {
+      amppPanelIdsByWorkload: { first: ['panel-c'] },
+    });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect(req.session).toMatchObject({
+      amppPanelIdsByWorkload: { first: ['panel-c'], second: ['panel-b'] },
+    });
+
+    const removed = setup({ amppPanelIdsByWorkload: {} });
+    Object.assign(removed.req.session, {
+      amppPanelIdsByWorkload: { first: ['panel-a'] },
+    });
+    const before = removed.service.snapshot(removed.req.session as never);
+    Object.assign(removed.req.session, {
+      amppPanelIdsByWorkload: { first: ['panel-c'] },
+    });
+    await removed.service.saveIfChanged(
+      removed.req as unknown as Request,
+      before,
+    );
+    expect(removed.req.session).toMatchObject({ amppPanelIdsByWorkload: {} });
+  });
+
+  it('discards panel IDs learned before a concurrent permission revocation', async () => {
+    const { req, service, snapshot } = setup({
+      authorizationFingerprint: 'revoked',
+      amppPanelIdsByWorkload: {},
+    });
+    Object.assign(req.session, {
+      authorizationFingerprint: 'granted',
+      amppPanelIdsByWorkload: { first: ['panel-a'] },
+    });
+    await service.saveIfChanged(req as unknown as Request, snapshot);
+    expect(req.session).toMatchObject({ amppPanelIdsByWorkload: {} });
+    expect(req.session.save).not.toHaveBeenCalled();
+  });
+
   function setup(stored: unknown) {
     const req = {
       sessionID: 'sid',

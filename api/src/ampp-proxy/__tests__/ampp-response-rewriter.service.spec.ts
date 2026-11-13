@@ -11,6 +11,20 @@ describe('AmppResponseRewriterService', () => {
     get: () => undefined,
   } as any);
 
+  it('rewrites an embedded control-panel redirect into its target workload context', () => {
+    const panel = '33333333-3333-4333-8333-333333333333';
+    const path = `/ampp/control/embedded/panelControl/${panel}/workload/${TARGET_WORKLOAD_ID}`;
+    const result = service.rewrite(SOURCE_WORKLOAD_ID, PUBLIC_ORIGIN, {
+      status: 302,
+      headers: { location: PLATFORM_URL + path },
+      body: Buffer.alloc(0),
+      url: PLATFORM_URL + '/app/wrapper',
+    });
+    expect(result.headers.Location).toBe(
+      `${PUBLIC_ORIGIN}/api/ampp-proxy/ui/${TARGET_WORKLOAD_ID}${path}`,
+    );
+  });
+
   it('injects the Recorder correction only into opted-in HTML', () => {
     const response = {
       status: 200,
