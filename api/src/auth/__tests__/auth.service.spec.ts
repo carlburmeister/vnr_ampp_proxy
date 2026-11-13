@@ -376,8 +376,9 @@ describe('AuthService', () => {
   it('refreshes permissions in an existing session when assignments change', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
     const initial = await service.login('admin', 'password');
-    const session: any = {};
+    const session: SessionData = {};
     service.applyAuthorization(session, initial);
+    session.amppPanelIdsByWorkload = { 'direct-workload-001': ['panel'] };
     getUserDBWorkloads.mockResolvedValue([]);
     getUserDashboards.mockResolvedValue([]);
     session.authorizationCheckedAt = 0;
@@ -385,6 +386,7 @@ describe('AuthService', () => {
     expect(session.allowedWorkloads).toEqual([]);
     expect(session.amppAllowedWorkloadIds).toEqual([]);
     expect(session.amppResourceWorkloadIds).toEqual([]);
+    expect(session.amppPanelIdsByWorkload).toBeUndefined();
   });
 
   it('filters GVUI workload associations without expanding embedded resource access', async () => {

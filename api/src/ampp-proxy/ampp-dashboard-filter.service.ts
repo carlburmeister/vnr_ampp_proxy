@@ -4,6 +4,7 @@ import type { SessionData } from 'express-session';
 
 import type { AmppDashboardMatrixReferences } from '../auth/types/session-data';
 import type { AmppCookieHttpResponse } from './ampp-cookie-http.service';
+import { filterMaverikxPanelResponse } from './ampp-maverikx-panels';
 import {
   getDashboardResourceIds,
   ICE_DASHBOARD_REFERENCE,
@@ -44,6 +45,13 @@ export class AmppDashboardFilterService {
 
     const target = new URL(upstreamPath, this.platformUrl);
     const pathname = target.pathname.replace(/\/+$/, '').toLowerCase();
+    const panelResponse = filterMaverikxPanelResponse(
+      session,
+      workloadId,
+      pathname,
+      response,
+    );
+    if (panelResponse) return panelResponse;
     const dashboardMatch = target.pathname.match(
       /^\/configuration\/api\/v1\/configuration\/gv\/systemdashboards\/dashboards\/([^/]+)$/i,
     );

@@ -10,6 +10,14 @@ import { AmppMatrixFilterService } from './ampp-matrix-filter.service';
 import { getDashboardResourceIds } from './ampp-dashboard-resources';
 import { GvuiProxyService } from './gvui/gvui-proxy.service';
 import { getDiscoveryNodeWorkloads } from './ampp-discovery-filter';
+import {
+  isMaverikxContext,
+  isPanelAllowed,
+  isPanelCommit,
+  isPanelMailboxId,
+  isPanelNotificationPublish,
+  panelUiTarget,
+} from './ampp-maverikx-panels';
 
 const API_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const GLOBAL_BOOTSTRAP_GET_PATHS = new Set([
@@ -93,6 +101,30 @@ export class AmppProxyPolicyService {
       throw new ForbiddenException(
         'AMPP API requests must use the API proxy route',
       );
+    }
+
+    const decodedUiPath = target.pathname
+      .split('/')
+      .map((part) => decodeURIComponent(part))
+      .join('/');
+    if (
+      /^\/ampp\/control\/embedded\/panelControl(?:\/|$)/i.test(decodedUiPath)
+    ) {
+      const panel = panelUiTarget(target.pathname);
+      const retryQuery =
+        target.searchParams.size <= 1 &&
+        [...target.searchParams].every(
+          ([name, value]) => name === 't' && /^\d{1,16}$/.test(value),
+        );
+      if (
+        !panel ||
+        !retryQuery ||
+        !isPanelAllowed(session, panel.workloadId, panel.panelId)
+      ) {
+        throw new ForbiddenException(
+          'AMPP panel is not allowed for this workload',
+        );
+      }
     }
 
     if (/^\/gvui(?:\/|$)/i.test(target.pathname)) {
@@ -198,6 +230,12 @@ export class AmppProxyPolicyService {
       return true;
     }
 
+    if (
+      this.isAllowedMaverikxRequest(method, target, session, workloadId, body)
+    ) {
+      return true;
+    }
+
     if (method === 'GET' && this.gvui?.isCatalogRequest(target) && this.gvui.isAllowed(session, workloadId)) {
       return true;
     }
@@ -260,6 +298,36 @@ export class AmppProxyPolicyService {
       method === 'POST' &&
       !target.search &&
       pathname === '/logging/api/v2/events'
+    );
+  }
+
+  private isAllowedMaverikxRequest(
+    method: string,
+    target: URL,
+    session: SessionData,
+    workloadId: string,
+    body: Buffer | undefined,
+  ): boolean {
+    if (!isMaverikxContext(session, workloadId) || target.search) return false;
+    const path = target.pathname.replace(/\/+$/, '').toLowerCase();
+    if (method === 'GET') {
+      if (
+        [
+          '/ampp/control/api/v1/panel/panels',
+          '/ampp/control/api/v1/macro',
+          '/ampp/control/api/v1/control/application/references',
+          '/cluster/state/api/v1/workloads',
+          `/configuration/api/v1/configurations/startswith/gv/app/${workloadId.toLowerCase()}/image-library`,
+        ].includes(path)
+      )
+        return true;
+      const panel = path.match(/^\/ampp\/control\/api\/v1\/panel\/([^/]+)$/);
+      return Boolean(panel && isPanelAllowed(session, workloadId, panel[1]));
+    }
+    return (
+      method === 'POST' &&
+      path === '/ampp/control/api/v1/control/commit' &&
+      isPanelCommit(session, workloadId, body)
     );
   }
 
@@ -472,7 +540,10 @@ export class AmppProxyPolicyService {
       !target.search &&
       /^\/notifications\/api\/v1\/notifications\/?$/i.test(decodedPath)
     ) {
-      return this.isAllowedNotificationPublish(body, allowedWorkloadIds, session);
+      return (
+        isPanelNotificationPublish(session, workloadId, body) ||
+        this.isAllowedNotificationPublish(body, allowedWorkloadIds, session)
+      );
     }
 
     const notificationMatch = decodedPath.match(
@@ -524,6 +595,7 @@ export class AmppProxyPolicyService {
           ]),
           dashboardScope,
           session.amppRecorderIdsByWorkload?.[workloadId.toLowerCase()],
+          isMaverikxContext(session, workloadId) ? workloadId : undefined,
         )),
     );
   }
@@ -536,8 +608,16 @@ export class AmppProxyPolicyService {
     allowedNodeIds: Set<string>,
     dashboardScope: boolean,
     recorderId?: string,
+    panelWorkloadId?: string,
   ): boolean {
     const normalizedTopic = topic.toLowerCase();
+
+    const panelControl = topic.match(
+      /^gv\.ampp\.control\.([0-9a-f-]{36})\.(?:#|\*\.\*|[a-z0-9_-]+\.(?:notify|status|error))$/i,
+    );
+    if (panelControl) {
+      return panelControl[1].toLowerCase() === panelWorkloadId?.toLowerCase();
+    }
 
     const recorder = topic.match(/^gv\.fabric\.recorder\.([0-9a-f-]{36})\.#$/i);
     if (recorder) {
@@ -642,6 +722,7 @@ export class AmppProxyPolicyService {
         Object.keys(parsed).length === 5 &&
         typeof id === 'string' &&
         (this.isAllowedMailboxId(id, allowedWorkloadIds) ||
+        isPanelMailboxId(session, workloadId, id) ||
           (this.gvui?.canCreateMailbox(session, workloadId, id) ?? false) ||
           (dashboardScope &&
             (/^ts-cluster\.systemdashboard--[0-9a-f-]{36}$/i.test(id) ||
@@ -1396,7 +1477,7 @@ export class AmppProxyPolicyService {
         /^\/mocha\/application\/([0-9a-f-]{36})(?:\/|$)/i,
       );
 
-    return match?.[1];
+    return match?.[1] ?? panelUiTarget(target.pathname)?.workloadId;
   }
 
   private getAllowedNodeIds(
